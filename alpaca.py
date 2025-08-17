@@ -288,7 +288,7 @@ def cmd_ps(_args):
         except:
             status = "stopped"
             
-        print(f"{alias:32s}  {mode:10s}  port={port:5s}  {repo:40s}  pid={pid}  {status}")
+        print(f"{alias:32s}  {mode:10s}  port={str(port):5s}  {repo:40s}  pid={str(pid)}  {status}")
 
 def cmd_stop(args):
     reg = read_registry()

@@ -406,7 +406,7 @@ def build_vllm_from_source(device: str, vllm_dir: Path, editable: bool = True):
         run([sys.executable, str(use_torch_script)], cwd=vllm_dir, check=False)
     
     if editable:
-        run([sys.executable, "-m", "pip", "install", "-e", ".", "--no-build-isolation", "-v"], 
+        run([sys.executable, "-m", "pip", "install", "-e", ".", "-v"], 
             cwd=vllm_dir, env=env)
     else:
         run([sys.executable, "setup.py", "bdist_wheel"], cwd=vllm_dir, env=env)

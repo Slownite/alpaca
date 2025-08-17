@@ -1,18 +1,20 @@
 [build-system]
-requires = ["setuptools", 
-"wheel", 
-"setuptools_scm[toml]>=7"]
+requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "alpaca-cli"
 version = "0.1.0"
 dependencies = [
-    "huggingface_hub", 
-    "httpx", 
-    "argcomplete", 
-    "psutil"
+  "huggingface_hub",
+  "httpx",
+  "argcomplete",
+  "psutil",
+  "torch",
 ]
+
+[tool.setuptools]
+py-modules = ["alpaca"]
 
 [project.optional-dependencies]
 all = ["vllm", "ray"]

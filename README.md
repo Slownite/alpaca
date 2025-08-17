@@ -41,7 +41,21 @@ Make sure you have Docker installed and running:
 docker version  # Should show client and server info
 ```
 
-### Installation (from source)
+### Installation
+
+#### Option 1: pipx (recommended)
+
+```bash
+pipx install alpaca-cli
+```
+
+#### Option 2: pip
+
+```bash
+pip install alpaca-cli
+```
+
+#### Option 3: from source
 
 ```bash
 git clone https://github.com/Slownite/alpaca.git

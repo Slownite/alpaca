@@ -46,8 +46,6 @@ from typing import Dict, Any, Optional, Tuple, List
 # ----------------------------
 # Configuration & paths
 # ----------------------------
-IMAGE = os.environ.get("ALPACA_IMAGE", "vllm/vllm-openai:latest")
-RAY_IMAGE = os.environ.get("ALPACA_RAY_IMAGE", "rayproject/ray:2.34.0")
 CACHE_DIR = Path(os.environ.get("ALPACA_CACHE_DIR", str(Path.home() / ".cache" / "huggingface")))
 STATE_DIR = Path(os.environ.get("ALPACA_STATE_DIR", str(Path.home() / ".alpaca")))
 REGISTRY_PATH = STATE_DIR / "registry.json"
@@ -82,13 +80,11 @@ def run(cmd: List[str], check=True, capture=False, env=None):
 def have(cmd: str) -> bool:
     return shutil.which(cmd) is not None
 
-def ensure_docker():
-    if not have("docker"):
-        die("Docker not found in PATH. Install Docker first.")
+def ensure_vllm():
     try:
-        run(["docker", "version"], check=True)
-    except Exception as e:
-        die(f"Cannot talk to Docker daemon: {e}")
+        import vllm
+    except ImportError:
+        die("vLLM not installed. Run: pip install vllm")
 
 def sanitize(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", name.replace("/", "_").replace(":", "_"))
@@ -96,8 +92,8 @@ def sanitize(name: str) -> str:
 def alias_to_state_dir(alias: str) -> Path:
     return STATE_DIR / "models" / sanitize(alias)
 
-def container_name(prefix: str, alias: str) -> str:
-    return f"{prefix}_{sanitize(alias)}"
+def process_name(alias: str) -> str:
+    return f"alpaca_vllm_{sanitize(alias)}"
 
 def read_registry() -> Dict[str, Any]:
     if REGISTRY_PATH.exists():
@@ -127,15 +123,9 @@ def next_free_port(start: int = DEFAULT_PORT_START, max_attempts: int = 200) -> 
 
 def gpu_available() -> bool:
     try:
-        out = run(["docker", "info", "--format", "{{json .Runtimes}}"], capture=True)
-        if '"nvidia"' not in out.stdout:
-            return False
-        probe = run([
-            "docker","run","--rm","--gpus","all","--entrypoint","bash",
-            "nvidia/cuda:12.2.0-base","-lc","nvidia-smi -L"
-        ], check=False, capture=True)
-        return probe.returncode == 0 and "GPU" in (probe.stdout or "")
-    except Exception:
+        import torch
+        return torch.cuda.is_available()
+    except ImportError:
         return False
 
 def ensure_cache():
@@ -179,35 +169,50 @@ def dir_size(path: Path) -> int:
             pass
     return total
 
-def docker_ps_alpaca() -> List[Dict[str, str]]:
-    out = run([
-        "docker", "ps", "--filter", "label=alpaca=true",
-        "--format", "{{.ID}}|{{.Names}}|{{.Status}}|{{.Ports}}|{{.Labels}}"
-    ], check=False, capture=True)
-    rows = []
-    if out.returncode != 0:
-        return rows
-    for line in out.stdout.strip().splitlines():
-        parts = line.split("|", 4)
-        if len(parts) == 5:
-            rows.append({"id": parts[0], "name": parts[1], "status": parts[2], "ports": parts[3], "labels": parts[4]})
-    return rows
+def get_running_processes() -> List[Dict[str, str]]:
+    """Get running alpaca vLLM processes."""
+    import psutil
+    processes = []
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time']):
+        try:
+            cmdline = proc.info['cmdline'] or []
+            if any('vllm.entrypoints.openai.api_server' in arg for arg in cmdline):
+                # Check if this is an alpaca-managed process
+                if any('alpaca_vllm' in arg for arg in cmdline):
+                    processes.append({
+                        'pid': str(proc.info['pid']),
+                        'name': proc.info['name'],
+                        'cmdline': ' '.join(cmdline),
+                        'status': proc.status(),
+                        'create_time': proc.info['create_time']
+                    })
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return processes
 
 def fetch_env_token() -> Optional[str]:
     return os.environ.get("HUGGING_FACE_HUB_TOKEN")
 
-def docker_rm_by_filter(label_filter: str):
-    out = run(["docker", "ps", "-aq", "--filter", f"label={label_filter}"], capture=True, check=False)
-    ids = out.stdout.strip().splitlines() if out.stdout else []
-    if not ids:
-        return
-    run(["docker", "rm", "-f"] + ids, check=False)
+def kill_processes_by_pattern(pattern: str):
+    """Kill processes matching a pattern."""
+    import psutil
+    for proc in psutil.process_iter(['pid', 'cmdline']):
+        try:
+            cmdline = proc.info['cmdline'] or []
+            if any(pattern in arg for arg in cmdline):
+                proc.terminate()
+                proc.wait(timeout=5)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
+            try:
+                proc.kill()
+            except:
+                pass
 
 # ----------------------------
 # Subcommand handlers (local)
 # ----------------------------
 def cmd_pull(args):
-    ensure_docker()
+    ensure_vllm()
     ensure_cache()
     ensure_state()
     reg = read_registry()
@@ -261,35 +266,64 @@ def cmd_ls(args):
         print(f"\nTotal cache size: {human_bytes(total)}")
 
 def cmd_ps(_args):
-    rows = docker_ps_alpaca()
-    if not rows:
-        print("(no running alpaca-managed containers)")
+    processes = get_running_processes()
+    reg = read_registry()
+    servers = reg.get("servers", {})
+    
+    if not processes and not servers:
+        print("(no running alpaca-managed processes)")
         return
-    for r in rows:
-        labels = {}
-        for kv in r["labels"].split(","):
-            if "=" in kv:
-                k, v = kv.split("=", 1)
-                labels[k.strip()] = v.strip()
-        mode = labels.get("alpaca.mode", labels.get("alpaca.role", "?"))
-        model = labels.get("alpaca.model", labels.get("alpaca.role", "?"))
-        port = labels.get("alpaca.port", "")
-        extra = labels.get("alpaca.extra", "")
-        print(f"{r['name']:32s}  {mode:10s}  port={port:5s}  {model:40s}  {extra}  {r['status']:s}")
+        
+    for alias, server_info in servers.items():
+        pid = server_info.get("pid")
+        port = server_info.get("port", "")
+        mode = server_info.get("mode", "?")
+        repo = server_info.get("repo", "?")
+        
+        # Check if process is still running
+        try:
+            import psutil
+            proc = psutil.Process(int(pid)) if pid else None
+            status = proc.status() if proc and proc.is_running() else "stopped"
+        except:
+            status = "stopped"
+            
+        print(f"{alias:32s}  {mode:10s}  port={port:5s}  {repo:40s}  pid={pid}  {status}")
 
 def cmd_stop(args):
     reg = read_registry()
     alias, _ = resolve_alias_or_repo(args.model, reg)
-    name = container_name("alpaca_vllm", alias)
-    run(["docker", "stop", name], check=False)
-    info(f"Stopped {name}")
+    servers = reg.get("servers", {})
+    
+    if alias not in servers:
+        info(f"No running server found for '{alias}'")
+        return
+        
+    pid = servers[alias].get("pid")
+    if pid:
+        try:
+            import psutil
+            proc = psutil.Process(int(pid))
+            proc.terminate()
+            proc.wait(timeout=10)
+            info(f"Stopped server for {alias} (PID {pid})")
+        except Exception as e:
+            info(f"Failed to stop process {pid}: {e}")
+    
+    # Remove from registry
+    servers.pop(alias, None)
+    write_registry(reg)
 
 def cmd_rm(args):
     reg = read_registry()
     alias, _ = resolve_alias_or_repo(args.model, reg)
-    name = container_name("alpaca_vllm", alias)
-    run(["docker", "rm", "-f", name], check=False)
-    info(f"Removed container {name}")
+    
+    # Stop the server first
+    servers = reg.get("servers", {})
+    if alias in servers:
+        cmd_stop(args)
+    
+    info(f"Removed server {alias}")
     if args.purge:
         if alias in reg.get("aliases", {}):
             reg["aliases"].pop(alias, None)
@@ -298,17 +332,15 @@ def cmd_rm(args):
         else:
             info("Alias not found in registry; nothing to purge.")
 
-def _decide_backend(args_backend: Optional[str]) -> str:
-    if args_backend == "gpu":
-        return "gpu"
-    if args_backend == "cpu":
-        return "cpu"
-    return "gpu" if gpu_available() else "cpu"
+def _decide_backend() -> str:
+    if not gpu_available():
+        die("GPU not available. This version requires CUDA GPU support.")
+    return "gpu"
 
-def _dtype_for_mode(mode: str, user_dtype: Optional[str]) -> str:
+def _dtype_for_mode(user_dtype: Optional[str]) -> str:
     if user_dtype:
         return user_dtype
-    return DTYPE_GPU_DEFAULT if mode == "gpu" else DTYPE_CPU_DEFAULT
+    return DTYPE_GPU_DEFAULT
 
 def _find_or_allocate_port(reg, alias: str, preferred: Optional[int]) -> int:
     srv = reg.get("servers", {}).get(alias)
@@ -337,47 +369,54 @@ def _docker_labels(base: Dict[str, str]) -> List[str]:
     return res
 
 def cmd_serve(args):
-    ensure_docker(); ensure_cache(); ensure_state()
+    ensure_vllm(); ensure_cache(); ensure_state()
     reg = read_registry()
     alias, repo_spec = _model_for_token(reg, args.model)
-    mode = _decide_backend("gpu" if args.gpu else "cpu" if args.cpu else None)
-    dtype = _dtype_for_mode(mode, args.dtype)
+    mode = _decide_backend()  # Always GPU now
+    dtype = _dtype_for_mode(args.dtype)
     port = _find_or_allocate_port(reg, alias, args.port)
-    name = container_name("alpaca_vllm", alias)
 
-    labels = {
-        "alpaca":"true","alpaca.alias":alias,"alpaca.model":repo_spec,
-        "alpaca.mode":mode,"alpaca.port":str(port)
-    }
-    cmd = ["docker","run","-d","--name",name,"--restart","unless-stopped",
-           "-p",f"{port}:8000","-e","VLLM_USE_MODELSCOPE=false",
-           "-v",f"{str(CACHE_DIR)}:/root/.cache/huggingface"] + _docker_labels(labels)
-    if mode == "gpu":
-        cmd += ["--gpus","all","-e","NVIDIA_VISIBLE_DEVICES=all"]
+    # Stop any existing server for this alias
+    servers = reg.get("servers", {})
+    if alias in servers:
+        cmd_stop(args)
 
-    vllm_args = ["python","-m","vllm.entrypoints.openai.api_server",
-                 "--model",repo_spec,"--host","0.0.0.0","--port","8000",
-                 "--dtype",dtype,"--max-num-seqs",str(args.max_seqs or MAX_SEQS_DEFAULT)]
+    # Build vLLM command
+    vllm_cmd = [
+        sys.executable, "-m", "vllm.entrypoints.openai.api_server",
+        "--model", repo_spec,
+        "--host", "0.0.0.0",
+        "--port", str(port),
+        "--dtype", dtype,
+        "--max-num-seqs", str(args.max_seqs or MAX_SEQS_DEFAULT)
+    ]
+
+    # Set environment variables
+    env = os.environ.copy()
+    env["VLLM_USE_MODELSCOPE"] = "false"
+    if token := fetch_env_token():
+        env["HUGGING_FACE_HUB_TOKEN"] = token
+
+    info(f"Starting vLLM (GPU, dtype={dtype}) on port {port} for {repo_spec} …")
     
-    # Add device specification to help vLLM detect platform
-    if mode == "cpu":
-        vllm_args.extend(["--device", "cpu"])
-    else:
-        vllm_args.extend(["--device", "cuda"])
-    cmd += [IMAGE] + vllm_args
+    # Start the process
+    proc = subprocess.Popen(
+        vllm_cmd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+    
+    _post_start_health(alias, port, repo_spec, proc.pid, mode, dtype)
 
-    run(["docker","rm","-f",name],check=False)
-    info(f"Starting vLLM ({mode}, dtype={dtype}) on port {port} for {repo_spec} …")
-    run(cmd, check=True)
-    _post_start_health(alias, port, repo_spec, IMAGE, mode, dtype)
-
-def _post_start_health(alias, port, repo_spec, image, mode, dtype):
+def _post_start_health(alias, port, repo_spec, pid, mode, dtype):
     reg = read_registry()
     reg.setdefault("servers", {})
     reg["servers"][alias] = {
-        "container": container_name("alpaca_vllm", alias),
+        "pid": pid,
         "port": port, "mode": mode, "dtype": dtype,
-        "repo": repo_spec, "image": image, "started_at": int(time.time())
+        "repo": repo_spec, "started_at": int(time.time())
     }
     write_registry(reg)
     # health
@@ -393,8 +432,8 @@ def _post_start_health(alias, port, repo_spec, image, mode, dtype):
                 pass
             time.sleep(0.5)
         if not ok:
-            info("warning: server did not become healthy in time; use `alpaca logs`.")
-        print(f"ready: {repo_spec} as {alias}  mode={mode}  dtype={dtype}  port={port}")
+            info("warning: server did not become healthy in time; check process logs.")
+        print(f"ready: {repo_spec} as {alias}  mode={mode}  dtype={dtype}  port={port}  pid={pid}")
         print(f"Try: curl {base}/v1/models")
     except Exception:
         pass
@@ -402,11 +441,18 @@ def _post_start_health(alias, port, repo_spec, image, mode, dtype):
 def cmd_logs(args):
     reg = read_registry()
     alias, _ = resolve_alias_or_repo(args.model, reg)
-    name = container_name("alpaca_vllm", alias)
-    cmd = ["docker","logs"]
-    if args.follow: cmd.append("-f")
-    cmd.append(name)
-    os.execvp(cmd[0], cmd)
+    servers = reg.get("servers", {})
+    
+    if alias not in servers:
+        die(f"No server found for alias '{alias}'")
+    
+    pid = servers[alias].get("pid")
+    if not pid:
+        die(f"No PID found for server '{alias}'")
+    
+    info(f"Note: vLLM process logs are handled by the process itself.")
+    info(f"Server '{alias}' is running with PID {pid}")
+    info("To see vLLM logs, check the terminal where alpaca was started or system logs.")
 
 def cmd_run(args):
     reg = read_registry()
@@ -438,127 +484,61 @@ def cmd_config(args):
     write_registry(reg); print("OK")
 
 # ----------------------------
-# Ray shared inference
+# Ray shared inference (simplified - requires manual Ray setup)
 # ----------------------------
-def cmd_ray_head(args):
-    ensure_docker()
-    name = "alpaca_ray_head"
-    dash = args.dashboard_port or RAY_DASHBOARD_PORT
-    client = args.client_port or RAY_CLIENT_PORT
-    gcs = args.gcs_port or RAY_GCS_PORT
-
-    labels = {"alpaca":"true","alpaca.role":"ray-head",
-              "alpaca.extra":f"dash={dash} client={client} gcs={gcs}"}
-    cmd = ["docker","run","-d","--name",name,"--restart","unless-stopped"] + \
-          ["-p",f"{dash}:{dash}","-p",f"{client}:{client}","-p",f"{gcs}:{gcs}"] + \
-          _docker_labels(labels) + [RAY_IMAGE,"bash","-lc",
-          f"ray start --head --port={gcs} --dashboard-host=0.0.0.0 --dashboard-port={dash} "
-          f"--ray-client-server-port={client} --num-cpus=0 && tail -f /dev/null"]
-    run(["docker","rm","-f",name],check=False)
-    info(f"Starting Ray head (dashboard {dash}, client {client}, gcs {gcs}) …")
-    run(cmd, check=True)
-
-    print("Ray head ready.")
-    print(f"Dashboard: http://127.0.0.1:{dash}")
-    print(f"Workers join with: alpaca ray-worker --address  <HEAD_IP:{gcs}>")
-    print(f"vLLM connects with: alpaca serve-ray … --address ray://<HEAD_IP>:{client}")
-
-def cmd_ray_worker(args):
-    ensure_docker()
-    if not args.address:
-        die("--address is required (format HEAD_IP:6379)")
-
-    name = f"alpaca_ray_worker_{int(time.time())}"
-    labels = {"alpaca":"true","alpaca.role":"ray-worker"}
-    cmd = ["docker","run","-d","--name",name,"--restart","unless-stopped"] + _docker_labels(labels)
-
-    cpus = max(1, int(args.cpus)) if args.cpus else 0  # 0 = Ray auto-detects
-
-    if args.gpu:
-        cmd += ["--gpus","all","-e","NVIDIA_VISIBLE_DEVICES=all"]
-
-    cmd += ["-v",f"{str(CACHE_DIR)}:/root/.cache/huggingface"]
-
-    ray_cmd = f"ray start --address={args.address} " + (f"--num-cpus={cpus} " if cpus>0 else "") + "&& tail -f /dev/null"
-    cmd += [RAY_IMAGE,"bash","-lc",ray_cmd]
-    info(f"Starting Ray worker (gpu={args.gpu}, cpus={'auto' if cpus==0 else cpus}) -> {args.address}")
-    run(cmd, check=True)
-    print("Ray worker started.")
-
-def cmd_ray_down(_args):
-    """Stop and remove Ray head/workers launched by alpaca."""
-    ensure_docker()
-    info("Stopping and removing alpaca Ray head/workers …")
-    docker_rm_by_filter("alpaca.role=ray-head")
-    docker_rm_by_filter("alpaca.role=ray-worker")
-    print("Ray cluster containers removed.")
-
 def cmd_serve_ray(args):
-    """Launch vLLM server attached to a Ray cluster (multi-node shared inference)."""
-    ensure_docker(); ensure_cache(); ensure_state()
+    """Launch vLLM server with Ray distributed executor (requires pre-existing Ray cluster)."""
+    try:
+        import ray
+    except ImportError:
+        die("Ray not installed. Run: pip install ray")
+        
+    ensure_vllm(); ensure_cache(); ensure_state()
+    
     if not args.address.startswith("ray://"):
-        die("RAY address must start with ray:// (example: ray://<HEAD_IP>:10001)")
+        die("RAY address must start with ray:// (example: ray://127.0.0.1:10001)")
+    
     reg = read_registry()
     alias, repo_spec = _model_for_token(reg, args.model)
-
     dtype = args.dtype or "auto"
     port = _find_or_allocate_port(reg, alias, args.port)
-    name = container_name("alpaca_vllm", alias)
 
-    labels = {
-        "alpaca":"true","alpaca.alias":alias,"alpaca.model":repo_spec,
-        "alpaca.mode":"ray","alpaca.port":str(port),
-        "alpaca.extra":f"namespace={args.namespace}"
-    }
+    # Stop any existing server for this alias
+    servers = reg.get("servers", {})
+    if alias in servers:
+        cmd_stop(args)
 
-    cmd = ["docker","run","-d","--name",name,"--restart","unless-stopped",
-           "-p",f"{port}:8000",
-           "-e","VLLM_USE_MODELSCOPE=false",
-           "-e",f"RAY_ADDRESS={args.address}",
-           "-e",f"RAY_NAMESPACE={args.namespace}",
-           "-v",f"{str(CACHE_DIR)}:/root/.cache/huggingface"] + _docker_labels(labels)
+    # Build vLLM command with Ray backend
+    vllm_cmd = [
+        sys.executable, "-m", "vllm.entrypoints.openai.api_server",
+        "--model", repo_spec,
+        "--host", "0.0.0.0",
+        "--port", str(port),
+        "--dtype", dtype,
+        "--distributed-executor-backend", "ray",
+        "--max-num-seqs", str(args.max_seqs or MAX_SEQS_DEFAULT)
+    ]
 
-    # API container itself doesn't need GPUs; Ray places executors on workers.
+    # Set environment variables
+    env = os.environ.copy()
+    env["RAY_ADDRESS"] = args.address
+    env["RAY_NAMESPACE"] = args.namespace
+    env["VLLM_USE_MODELSCOPE"] = "false"
+    if token := fetch_env_token():
+        env["HUGGING_FACE_HUB_TOKEN"] = token
 
-    vllm_args = ["python","-m","vllm.entrypoints.openai.api_server",
-                 "--model",repo_spec,"--host","0.0.0.0","--port","8000",
-                 "--dtype",dtype,
-                 "--distributed-executor-backend","ray",
-                 "--max-num-seqs",str(args.max_seqs or MAX_SEQS_DEFAULT)]
-    cmd += [IMAGE] + vllm_args
-
-    run(["docker","rm","-f",name],check=False)
-    info(f"Starting vLLM (Ray backend) on port {port}, namespace={args.namespace}, address={args.address}")
-    run(cmd, check=True)
-    _post_start_health(alias, port, repo_spec, IMAGE, "ray", dtype)
-
-# ----------------------------
-# Cluster helpers (single host)
-# ----------------------------
-def cmd_cluster_up(args):
-    """Start a Ray head + local workers on the same machine."""
-    # Head first
-    cmd_ray_head(argparse.Namespace(
-        dashboard_port=args.dashboard_port,
-        client_port=args.client_port,
-        gcs_port=args.gcs_port
-    ))
-    head_addr = f"127.0.0.1:{args.gcs_port}"
-
-    # CPU workers
-    for i in range(args.cpu_workers or 0):
-        info(f"Starting CPU worker #{i+1} …")
-        cmd_ray_worker(argparse.Namespace(address=head_addr, cpus=args.cpus_per_worker, gpu=False))
-    # GPU workers
-    for i in range(args.gpu_workers or 0):
-        info(f"Starting GPU worker #{i+1} …")
-        cmd_ray_worker(argparse.Namespace(address=head_addr, cpus=args.cpus_per_worker, gpu=True))
-
-    print("cluster-up complete.")
-    print(f"Use serve-ray … --address ray://127.0.0.1:{args.client_port}")
-
-def cmd_cluster_down(_args):
-    cmd_ray_down(_args)
+    info(f"Starting vLLM (Ray backend) on port {port}, address={args.address}")
+    
+    # Start the process
+    proc = subprocess.Popen(
+        vllm_cmd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+    
+    _post_start_health(alias, port, repo_spec, proc.pid, "ray", dtype)
 
 # ----------------------------
 # Argument parsing
@@ -576,31 +556,28 @@ def build_parser():
     sp.add_argument("--size", action="store_true", help="Show total cache size.")
     sp.set_defaults(func=cmd_ls)
 
-    sp = sub.add_parser("serve", help="Serve a model via vLLM (local CPU/GPU).")
+    sp = sub.add_parser("serve", help="Serve a model via vLLM (GPU only).")
     sp.add_argument("model", help="Alias or HF repo spec")
-    mgroup = sp.add_mutually_exclusive_group()
-    mgroup.add_argument("--gpu", action="store_true", help="Force GPU mode.")
-    mgroup.add_argument("--cpu", action="store_true", help="Force CPU mode.")
     sp.add_argument("--port", type=int, help="Host port (default auto).")
     sp.add_argument("--dtype", choices=["auto", "float32", "bf16", "fp16"], help="Override dtype.")
     sp.add_argument("--max-seqs", type=int, help=f"Max concurrent sequences (default {MAX_SEQS_DEFAULT}).")
     sp.set_defaults(func=cmd_serve)
 
-    sp = sub.add_parser("ps", help="List running alpaca-managed containers.")
+    sp = sub.add_parser("ps", help="List running alpaca-managed processes.")
     sp.set_defaults(func=cmd_ps)
 
     sp = sub.add_parser("stop", help="Stop a running server.")
     sp.add_argument("model", help="Alias or repo spec used to start it.")
     sp.set_defaults(func=cmd_stop)
 
-    sp = sub.add_parser("rm", help="Remove server and (optionally) alias.")
+    sp = sub.add_parser("rm", help="Remove server process and (optionally) alias.")
     sp.add_argument("model", help="Alias or repo spec.")
     sp.add_argument("--purge", action="store_true", help="Also remove alias from registry.")
     sp.set_defaults(func=cmd_rm)
 
-    sp = sub.add_parser("logs", help="Tail server logs.")
+    sp = sub.add_parser("logs", help="Show server process info.")
     sp.add_argument("model", help="Alias or repo spec.")
-    sp.add_argument("-f", "--follow", action="store_true", help="Follow logs.")
+    sp.add_argument("-f", "--follow", action="store_true", help="(ignored - for compatibility)")
     sp.set_defaults(func=cmd_logs)
 
     sp = sub.add_parser("run", help="Send a single request to a running server.")
@@ -615,20 +592,8 @@ def build_parser():
     sp.add_argument("--set", nargs="*", help="Set KEY=VAL pairs.")
     sp.set_defaults(func=cmd_config)
 
-    # Ray shared inference
-    sp = sub.add_parser("ray-head", help="Start a Ray head node.")
-    sp.add_argument("--dashboard-port", type=int, default=RAY_DASHBOARD_PORT)
-    sp.add_argument("--client-port", type=int, default=RAY_CLIENT_PORT)
-    sp.add_argument("--gcs-port", type=int, default=RAY_GCS_PORT)
-    sp.set_defaults(func=cmd_ray_head)
-
-    sp = sub.add_parser("ray-worker", help="Start a Ray worker that joins a head.")
-    sp.add_argument("--address", required=True, help="Ray head GCS address, e.g. 10.0.0.5:6379")
-    sp.add_argument("--cpus", type=int, help="CPUs to contribute (default: Ray auto).")
-    sp.add_argument("--gpu", action="store_true", help="Contribute all GPUs from this host.")
-    sp.set_defaults(func=cmd_ray_worker)
-
-    sp = sub.add_parser("serve-ray", help="Serve a model using Ray distributed executor (multi-node).")
+    # Ray shared inference (simplified)
+    sp = sub.add_parser("serve-ray", help="Serve a model using Ray distributed executor (requires pre-existing Ray cluster).")
     sp.add_argument("model", help="Alias or HF repo spec")
     sp.add_argument("--address", required=True, help="Ray client address, e.g. ray://10.0.0.5:10001")
     sp.add_argument("--namespace", default="vllm", help="Ray namespace to use.")
@@ -636,21 +601,6 @@ def build_parser():
     sp.add_argument("--dtype", choices=["auto", "float32", "bf16", "fp16"], help="Override dtype (default auto).")
     sp.add_argument("--max-seqs", type=int, help=f"Max concurrent sequences (default {MAX_SEQS_DEFAULT}).")
     sp.set_defaults(func=cmd_serve_ray)
-
-    sp = sub.add_parser("ray-down", help="Stop and remove Ray head/workers launched by alpaca.")
-    sp.set_defaults(func=cmd_ray_down)
-
-    sp = sub.add_parser("cluster-up", help="Start Ray head + local workers on this host.")
-    sp.add_argument("--cpu-workers", type=int, default=1, help="Number of local CPU workers.")
-    sp.add_argument("--gpu-workers", type=int, default=0, help="Number of local GPU workers.")
-    sp.add_argument("--cpus-per-worker", type=int, help="CPUs per worker (default Ray auto).")
-    sp.add_argument("--dashboard-port", type=int, default=RAY_DASHBOARD_PORT)
-    sp.add_argument("--client-port", type=int, default=RAY_CLIENT_PORT)
-    sp.add_argument("--gcs-port", type=int, default=RAY_GCS_PORT)
-    sp.set_defaults(func=cmd_cluster_up)
-
-    sp = sub.add_parser("cluster-down", help="Tear down local Ray head/workers started by alpaca.")
-    sp.set_defaults(func=cmd_cluster_down)
 
     return p
 

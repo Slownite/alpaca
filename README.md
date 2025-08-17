@@ -1,8 +1,8 @@
 # 🦙 Alpaca — Ollama-style vLLM Wrapper
 
-A streamlined CLI that brings Ollama's simplicity to [vLLM](https://github.com/vllm-project/vllm) using Docker containers, with optional distributed serving via [Ray](https://ray.io/). Pull, serve, and manage large language models with ease.
+A streamlined CLI that brings Ollama's simplicity to [vLLM](https://github.com/vllm-project/vllm) with native Python processes, with optional distributed serving via [Ray](https://ray.io/). Pull, serve, and manage large language models with ease.
 
-> Requires Docker and Python 3.9+ ([download](https://www.python.org/downloads/)). Licensed under [MIT](https://opensource.org/licenses/MIT).
+> Requires CUDA GPU, Python 3.9+, and vLLM ([download](https://www.python.org/downloads/)). Licensed under [MIT](https://opensource.org/licenses/MIT).
 
 ---
 
@@ -11,15 +11,15 @@ A streamlined CLI that brings Ollama's simplicity to [vLLM](https://github.com/v
 ### 🚀 Simple model management
 
 * **Pull & cache** models from Hugging Face
-* **Serve locally** with automatic CPU/GPU detection via Docker
-* **Process control**: list, stop, and manage Docker containers
+* **Serve locally** with GPU acceleration via vLLM
+* **Process control**: list, stop, and manage vLLM processes
 * **Aliases** for friendly model names
 
-### 🐳 Docker-based serving
+### ⚡ Native vLLM serving
 
-* **Pre-built containers** for immediate deployment
-* **Automatic hardware detection** (CPU/GPU)
-* **Resource isolation** and management
+* **Direct vLLM integration** for maximum performance
+* **GPU-only operation** for optimal inference speed
+* **Process management** with PID tracking
 * **Easy port management** and networking
 
 ### 🌐 Distributed inference
@@ -36,9 +36,10 @@ A streamlined CLI that brings Ollama's simplicity to [vLLM](https://github.com/v
 
 ### Prerequisites
 
-Make sure you have Docker installed and running:
+Make sure you have CUDA GPU support:
 ```bash
-docker version  # Should show client and server info
+nvidia-smi  # Should show GPU info
+python -c "import torch; print(torch.cuda.is_available())"  # Should print True
 ```
 
 ### Installation
@@ -71,7 +72,7 @@ pip install -e .
 # Pull a model from Hugging Face and alias it
 alpaca pull microsoft/DialoGPT-medium --alias chatbot
 
-# Start serving (automatically detects CPU/GPU)
+# Start serving (GPU only)
 alpaca serve chatbot
 
 # Test a prompt
@@ -88,31 +89,27 @@ alpaca run chatbot -p "Hello, how are you today?"
 | ------- | ------------------------- | --------------------------------------- |
 | `pull`  | Download model from HF    | `alpaca pull meta-llama/Llama-2-7b-hf`  |
 | `ls`    | List cached models        | `alpaca ls --size`                      |
-| `serve` | Start model server        | `alpaca serve llama2 --port 8000`       |
-| `ps`    | List running containers   | `alpaca ps`                             |
-| `stop`  | Stop a server container   | `alpaca stop llama2`                    |
-| `rm`    | Remove container/alias    | `alpaca rm llama2 --purge`              |
+| `serve` | Start model server (GPU)  | `alpaca serve llama2 --port 8000`       |
+| `ps`    | List running processes    | `alpaca ps`                             |
+| `stop`  | Stop a server process     | `alpaca stop llama2`                    |
+| `rm`    | Remove process/alias      | `alpaca rm llama2 --purge`              |
 | `run`   | Send test request         | `alpaca run llama2 -p "Tell me a joke"` |
-| `logs`  | Show container logs       | `alpaca logs llama2 -f`                 |
+| `logs`  | Show process info         | `alpaca logs llama2`                    |
 | `config`| Show/set configuration    | `alpaca config --show`                  |
 
 **Serve options**
 
-* `--gpu` / `--cpu` force mode
 * `--port PORT` specify port (default: auto)
 * `--dtype {auto,float32,bf16,fp16}` precision
 * `--max-seqs N` max concurrent sequences
 
 ### 🌐 Distributed (Ray)
 
-| Command        | Description                    | Example                                              |
-| -------------- | ------------------------------ | ---------------------------------------------------- |
-| `ray-head`     | Start Ray head node            | `alpaca ray-head --dashboard-port 8265`             |
-| `ray-worker`   | Start Ray worker               | `alpaca ray-worker --address head:6379 --gpu`       |
-| `serve-ray`    | Serve with Ray backend         | `alpaca serve-ray llama2 --address ray://head:10001` |
-| `ray-down`     | Stop Ray head/workers          | `alpaca ray-down`                                    |
-| `cluster-up`   | Start local Ray cluster        | `alpaca cluster-up --gpu-workers 2`                 |
-| `cluster-down` | Stop local Ray cluster         | `alpaca cluster-down`                                |
+| Command        | Description                           | Example                                              |
+| -------------- | ------------------------------------- | ---------------------------------------------------- |
+| `serve-ray`    | Serve with Ray backend (requires pre-existing Ray cluster) | `alpaca serve-ray llama2 --address ray://head:10001` |
+
+**Note**: Ray cluster management is simplified. You need to set up Ray cluster manually using `ray start --head` and `ray start --address=<head-ip>:6379` on worker nodes.
 
 ---
 
@@ -122,7 +119,7 @@ alpaca run chatbot -p "Hello, how are you today?"
 
 ```bash
 alpaca pull facebook/opt-125m --alias tiny
-alpaca serve tiny --cpu
+alpaca serve tiny
 alpaca run tiny -p "The future of AI is"
 ```
 
@@ -130,17 +127,17 @@ alpaca run tiny -p "The future of AI is"
 
 ```bash
 alpaca pull meta-llama/Llama-2-7b-chat-hf --alias llama2-chat
-alpaca serve llama2-chat --gpu --dtype bf16 --max-seqs 64
+alpaca serve llama2-chat --dtype bf16 --max-seqs 64
 ```
 
 ### Multi-node deployment
 
 ```bash
 # On head node
-alpaca ray-head --dashboard-port 8265
+ray start --head --dashboard-port=8265
 
-# On worker nodes
-alpaca ray-worker --address HEAD_IP:6379 --gpu
+# On worker nodes  
+ray start --address=HEAD_IP:6379
 
 # Serve distributed model
 alpaca serve-ray llama2-70b --address ray://HEAD_IP:10001
@@ -164,12 +161,9 @@ alpaca run llama2 --path /v1/completions -p "Once upon a time"
 ### Environment variables
 
 ```bash
-export ALPACA_IMAGE="vllm/vllm-openai:latest"        # vLLM Docker image
-export ALPACA_RAY_IMAGE="rayproject/ray:2.34.0"      # Ray Docker image
 export ALPACA_CACHE_DIR="$HOME/.cache/huggingface"   # Model cache directory
 export ALPACA_STATE_DIR="$HOME/.alpaca"              # State directory
 export ALPACA_PORT_START=8000                        # Starting port for auto-allocation
-export ALPACA_DTYPE_CPU="float32"                    # Default CPU dtype
 export ALPACA_DTYPE_GPU="auto"                       # Default GPU dtype
 export ALPACA_MAX_SEQS=32                            # Default max sequences
 export HUGGING_FACE_HUB_TOKEN="your_token_here"      # For private models

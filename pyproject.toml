@@ -29,7 +29,8 @@ dependencies = [
     "huggingface_hub", 
     "httpx", 
     "argcomplete", 
-    "psutil"
+    "psutil",
+    "vllm"
 ]
 
 [project.urls]
@@ -38,8 +39,6 @@ Repository = "https://github.com/Slownite/alpaca.git"
 Issues = "https://github.com/Slownite/alpaca/issues"
 
 [project.optional-dependencies]
-all = ["vllm", "ray"]
-vllm = ["vllm"]
 ray = ["ray"]
 
 [project.scripts]

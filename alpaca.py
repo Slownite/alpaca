@@ -358,6 +358,12 @@ def cmd_serve(args):
     vllm_args = ["python","-m","vllm.entrypoints.openai.api_server",
                  "--model",repo_spec,"--host","0.0.0.0","--port","8000",
                  "--dtype",dtype,"--max-num-seqs",str(args.max_seqs or MAX_SEQS_DEFAULT)]
+    
+    # Add device specification to help vLLM detect platform
+    if mode == "cpu":
+        vllm_args.extend(["--device", "cpu"])
+    else:
+        vllm_args.extend(["--device", "cuda"])
     cmd += [IMAGE] + vllm_args
 
     run(["docker","rm","-f",name],check=False)

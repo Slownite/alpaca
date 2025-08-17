@@ -5,5 +5,17 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "alpaca-cli"
 version = "0.1.0"
-dependencies = ["huggingface_hub", "httpx"]
-scripts = { alpaca = "alpaca:main" }
+dependencies = [
+    "huggingface_hub", 
+    "httpx", 
+    "argcomplete", 
+    "psutil"
+]
+
+[project.optional-dependencies]
+all = ["vllm", "ray"]
+vllm = ["vllm"]
+ray = ["ray"]
+
+[project.scripts]
+alpaca = "alpaca:main"

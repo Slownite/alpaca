@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-alpaca — Ollama-style wrapper for vLLM (Docker backend) with optional Ray shared inference.
+alpaca — Ollama-style wrapper for vLLM with native Python processes and Ray cluster management.
 
 Commands (local):
   pull <hf_repo>[:rev] [--alias <name>]
-  serve <model-or-alias> [--port <p>] [--gpu|--cpu] [--dtype auto|float32|bf16|fp16] [--max-seqs N]
+  serve <model-or-alias> [--port <p>] [--dtype auto|float32|bf16|fp16] [--max-seqs N]
   run <model-or-alias> [-p "…"] [--path /v1/chat/completions] [--json FILE]
   ps
   ls [--size]
@@ -13,12 +13,16 @@ Commands (local):
   logs <model-or-alias> [-f]
   config [--set KEY=VAL] [--show]
 
-Ray shared inference:
-  ray-head [--dashboard-port 8265] [--client-port 10001] [--gcs-port 6379]
-  ray-worker --address <HEAD_IP:6379> [--cpus N] [--gpu]
-  serve-ray <model-or-alias> --address ray://<HEAD_IP>:10001 [--namespace vllm]
+Ray cluster management:
+  ray-head     [--dashboard-port 8265] [--client-port 10001] [--gcs-port 6379]
+  ray-worker   --address <HEAD_IP:6379> [--cpus N] [--gpus N]
+  ray-status   (show cluster status and resources)
+  ray-down     (stop & cleanup Ray cluster)
+
+Ray distributed inference:
+  serve-ray <model-or-alias> [--address ray://<HEAD_IP>:10001] [--namespace vllm]
             [--port <p>] [--dtype auto|float32|bf16|fp16] [--max-seqs N]
-  ray-down  (stop & remove Ray head/workers launched by alpaca)
+            (auto-detects local Ray cluster if no address provided)
 
 Convenience cluster helpers (single host):
   cluster-up   [--cpu-workers N] [--gpu-workers N] [--cpus-per-worker M]
@@ -26,9 +30,9 @@ Convenience cluster helpers (single host):
   cluster-down (alias of ray-down)
 
 Notes:
-  - Uses Docker; mounts HF cache at ~/.cache/huggingface.
+  - Uses native Python processes with GPU acceleration via vLLM.
   - Respects HUGGING_FACE_HUB_TOKEN for private/gated models.
-  - GPU detection is automatic for local 'serve'; for Ray workers use --gpu.
+  - Ray cluster management provides full lifecycle control of distributed setups.
 """
 
 import argparse
@@ -484,10 +488,357 @@ def cmd_config(args):
     write_registry(reg); print("OK")
 
 # ----------------------------
+# Ray cluster management
+# ----------------------------
+def ensure_ray():
+    try:
+        import ray
+    except ImportError:
+        die("Ray not installed. Run: pip install ray")
+
+def get_ray_processes() -> List[Dict[str, str]]:
+    """Get running Ray processes (head/worker nodes)."""
+    import psutil
+    processes = []
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time']):
+        try:
+            cmdline = proc.info['cmdline'] or []
+            # Look for ray processes
+            if (any('ray' in arg for arg in cmdline) and 
+                any(cmd in ' '.join(cmdline) for cmd in ['ray start', 'ray::'])):
+                processes.append({
+                    'pid': str(proc.info['pid']),
+                    'name': proc.info['name'],
+                    'cmdline': ' '.join(cmdline),
+                    'status': proc.status(),
+                    'create_time': proc.info['create_time']
+                })
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return processes
+
+def cmd_ray_head(args):
+    """Start Ray head node."""
+    ensure_ray()
+    ensure_state()
+    
+    reg = read_registry()
+    ray_cluster = reg.get("ray_cluster", {})
+    
+    # Check if head node is already running
+    if ray_cluster.get("head_node"):
+        head_info = ray_cluster["head_node"]
+        try:
+            import psutil
+            proc = psutil.Process(int(head_info["pid"]))
+            if proc.is_running():
+                info(f"Ray head node already running (PID {head_info['pid']}) on ports: dashboard={head_info['dashboard_port']}, client={head_info['client_port']}, gcs={head_info['gcs_port']}")
+                return
+        except:
+            pass
+    
+    # Allocate ports
+    dashboard_port = args.dashboard_port or next_free_port(RAY_DASHBOARD_PORT)
+    client_port = args.client_port or next_free_port(RAY_CLIENT_PORT)
+    gcs_port = args.gcs_port or next_free_port(RAY_GCS_PORT)
+    
+    # Build Ray head command
+    ray_cmd = [
+        "ray", "start", "--head",
+        "--dashboard-port", str(dashboard_port),
+        "--ray-client-server-port", str(client_port),
+        "--port", str(gcs_port)
+    ]
+    
+    if args.no_dashboard:
+        ray_cmd.extend(["--include-dashboard", "false"])
+    
+    info(f"Starting Ray head node on ports: dashboard={dashboard_port}, client={client_port}, gcs={gcs_port}")
+    
+    # Start Ray head node
+    result = run(ray_cmd, capture=True)
+    if result.returncode != 0:
+        die(f"Failed to start Ray head node: {result.stderr}")
+    
+    # Find the Ray head process
+    time.sleep(2)  # Give it time to start
+    ray_processes = get_ray_processes()
+    head_pid = None
+    for proc in ray_processes:
+        if "ray start --head" in proc['cmdline']:
+            head_pid = proc['pid']
+            break
+    
+    if not head_pid:
+        die("Could not find Ray head process after starting")
+    
+    # Update registry
+    reg.setdefault("ray_cluster", {})
+    reg["ray_cluster"]["head_node"] = {
+        "pid": head_pid,
+        "dashboard_port": dashboard_port,
+        "client_port": client_port,
+        "gcs_port": gcs_port,
+        "address": f"127.0.0.1:{gcs_port}",
+        "ray_address": f"ray://127.0.0.1:{client_port}",
+        "started_at": int(time.time())
+    }
+    reg["ray_cluster"]["workers"] = reg["ray_cluster"].get("workers", {})
+    write_registry(reg)
+    
+    print(f"Ray head node started successfully!")
+    print(f"  Dashboard: http://127.0.0.1:{dashboard_port}")
+    print(f"  Client address: ray://127.0.0.1:{client_port}")
+    print(f"  GCS address: 127.0.0.1:{gcs_port}")
+    print(f"  PID: {head_pid}")
+    print(f"\nTo add workers: alpaca ray-worker --address 127.0.0.1:{gcs_port}")
+    print(f"To serve models: alpaca serve-ray <model> --address ray://127.0.0.1:{client_port}")
+
+def cmd_ray_worker(args):
+    """Add Ray worker node to existing cluster."""
+    ensure_ray()
+    ensure_state()
+    
+    if not args.address:
+        die("Worker address is required. Use --address <HEAD_IP>:<GCS_PORT>")
+    
+    reg = read_registry()
+    
+    # Build Ray worker command
+    ray_cmd = ["ray", "start", "--address", args.address]
+    
+    if args.cpus:
+        ray_cmd.extend(["--num-cpus", str(args.cpus)])
+    if args.gpus:
+        ray_cmd.extend(["--num-gpus", str(args.gpus)])
+    
+    info(f"Adding Ray worker node to cluster at {args.address}")
+    
+    # Start Ray worker
+    result = run(ray_cmd, capture=True)
+    if result.returncode != 0:
+        die(f"Failed to start Ray worker: {result.stderr}")
+    
+    # Find the Ray worker process
+    time.sleep(2)
+    ray_processes = get_ray_processes()
+    worker_pid = None
+    for proc in ray_processes:
+        if f"ray start --address {args.address}" in proc['cmdline']:
+            worker_pid = proc['pid']
+            break
+    
+    if not worker_pid:
+        die("Could not find Ray worker process after starting")
+    
+    # Update registry
+    worker_id = f"worker_{int(time.time())}"
+    reg.setdefault("ray_cluster", {}).setdefault("workers", {})
+    reg["ray_cluster"]["workers"][worker_id] = {
+        "pid": worker_pid,
+        "address": args.address,
+        "cpus": args.cpus,
+        "gpus": args.gpus,
+        "started_at": int(time.time())
+    }
+    write_registry(reg)
+    
+    print(f"Ray worker node added successfully!")
+    print(f"  Connected to: {args.address}")
+    print(f"  PID: {worker_pid}")
+    if args.cpus:
+        print(f"  CPUs: {args.cpus}")
+    if args.gpus:
+        print(f"  GPUs: {args.gpus}")
+
+def cmd_ray_status(args):
+    """Show Ray cluster status."""
+    ensure_ray()
+    
+    reg = read_registry()
+    ray_cluster = reg.get("ray_cluster", {})
+    
+    if not ray_cluster:
+        print("No Ray cluster found in registry")
+        return
+    
+    # Check head node
+    head_info = ray_cluster.get("head_node")
+    if head_info:
+        try:
+            import psutil
+            proc = psutil.Process(int(head_info["pid"]))
+            head_status = "running" if proc.is_running() else "stopped"
+        except:
+            head_status = "unknown"
+        
+        print("Ray Cluster Status:")
+        print(f"  Head Node (PID {head_info['pid']}): {head_status}")
+        print(f"    Dashboard: http://127.0.0.1:{head_info['dashboard_port']}")
+        print(f"    Client: {head_info['ray_address']}")
+        print(f"    GCS: {head_info['address']}")
+    else:
+        print("No head node found")
+        return
+    
+    # Check workers
+    workers = ray_cluster.get("workers", {})
+    if workers:
+        print(f"  Worker Nodes ({len(workers)}):")
+        for worker_id, worker_info in workers.items():
+            try:
+                import psutil
+                proc = psutil.Process(int(worker_info["pid"]))
+                worker_status = "running" if proc.is_running() else "stopped"
+            except:
+                worker_status = "unknown"
+            
+            print(f"    {worker_id} (PID {worker_info['pid']}): {worker_status}")
+            print(f"      Address: {worker_info['address']}")
+            if worker_info.get('cpus'):
+                print(f"      CPUs: {worker_info['cpus']}")
+            if worker_info.get('gpus'):
+                print(f"      GPUs: {worker_info['gpus']}")
+    else:
+        print("  No worker nodes")
+    
+    # Try to get live cluster info from Ray
+    try:
+        import ray
+        if head_status == "running":
+            ray.init(address=head_info['ray_address'])
+            cluster_resources = ray.cluster_resources()
+            available_resources = ray.available_resources()
+            print(f"\nLive Cluster Resources:")
+            print(f"  Total CPUs: {cluster_resources.get('CPU', 0)}")
+            print(f"  Available CPUs: {available_resources.get('CPU', 0)}")
+            if 'GPU' in cluster_resources:
+                print(f"  Total GPUs: {cluster_resources.get('GPU', 0)}")
+                print(f"  Available GPUs: {available_resources.get('GPU', 0)}")
+            ray.shutdown()
+    except Exception:
+        pass
+
+def cmd_ray_down(args):
+    """Stop Ray cluster."""
+    ensure_ray()
+    
+    reg = read_registry()
+    ray_cluster = reg.get("ray_cluster", {})
+    
+    if not ray_cluster:
+        info("No Ray cluster found in registry")
+        return
+    
+    stopped_processes = []
+    
+    # Stop worker nodes first
+    workers = ray_cluster.get("workers", {})
+    for worker_id, worker_info in workers.items():
+        pid = worker_info.get("pid")
+        if pid:
+            try:
+                import psutil
+                proc = psutil.Process(int(pid))
+                if proc.is_running():
+                    proc.terminate()
+                    proc.wait(timeout=10)
+                    stopped_processes.append(f"worker {worker_id} (PID {pid})")
+            except Exception as e:
+                info(f"Warning: Could not stop worker {worker_id}: {e}")
+    
+    # Stop head node
+    head_info = ray_cluster.get("head_node")
+    if head_info:
+        pid = head_info.get("pid")
+        if pid:
+            try:
+                import psutil
+                proc = psutil.Process(int(pid))
+                if proc.is_running():
+                    proc.terminate()
+                    proc.wait(timeout=10)
+                    stopped_processes.append(f"head node (PID {pid})")
+            except Exception as e:
+                info(f"Warning: Could not stop head node: {e}")
+    
+    # Also try ray stop command
+    try:
+        run(["ray", "stop"], check=False)
+    except Exception:
+        pass
+    
+    # Clear registry
+    reg.pop("ray_cluster", None)
+    write_registry(reg)
+    
+    if stopped_processes:
+        print("Stopped Ray cluster:")
+        for proc in stopped_processes:
+            print(f"  - {proc}")
+    else:
+        print("Ray cluster stopped (no running processes found)")
+
+def cmd_cluster_up(args):
+    """Start a local Ray cluster with multiple workers."""
+    ensure_ray()
+    ensure_state()
+    
+    # Start head node first
+    head_args = type('obj', (object,), {
+        'dashboard_port': args.dashboard_port,
+        'client_port': args.client_port, 
+        'gcs_port': args.gcs_port,
+        'no_dashboard': False
+    })
+    cmd_ray_head(head_args)
+    
+    # Get head node info for worker connections
+    reg = read_registry()
+    head_info = reg.get("ray_cluster", {}).get("head_node")
+    if not head_info:
+        die("Failed to start head node")
+    
+    # Start worker nodes
+    num_workers = args.cpu_workers + args.gpu_workers
+    if num_workers > 0:
+        time.sleep(3)  # Give head node time to fully start
+        
+        # CPU workers
+        for i in range(args.cpu_workers):
+            worker_args = type('obj', (object,), {
+                'address': head_info['address'],
+                'cpus': args.cpus_per_worker,
+                'gpus': None
+            })
+            try:
+                cmd_ray_worker(worker_args)
+                time.sleep(1)  # Brief pause between workers
+            except Exception as e:
+                info(f"Warning: Failed to start CPU worker {i+1}: {e}")
+        
+        # GPU workers
+        for i in range(args.gpu_workers):
+            worker_args = type('obj', (object,), {
+                'address': head_info['address'],
+                'cpus': args.cpus_per_worker,
+                'gpus': 1
+            })
+            try:
+                cmd_ray_worker(worker_args)
+                time.sleep(1)
+            except Exception as e:
+                info(f"Warning: Failed to start GPU worker {i+1}: {e}")
+    
+    print(f"\nLocal Ray cluster started with {num_workers} workers!")
+    print(f"Use 'alpaca ray-status' to check cluster status")
+    print(f"Use 'alpaca serve-ray <model> --address {head_info['ray_address']}' to serve models")
+
+# ----------------------------
 # Ray shared inference (simplified - requires manual Ray setup)
 # ----------------------------
 def cmd_serve_ray(args):
-    """Launch vLLM server with Ray distributed executor (requires pre-existing Ray cluster)."""
+    """Launch vLLM server with Ray distributed executor."""
     try:
         import ray
     except ImportError:
@@ -495,10 +846,30 @@ def cmd_serve_ray(args):
         
     ensure_vllm(); ensure_cache(); ensure_state()
     
-    if not args.address.startswith("ray://"):
-        die("RAY address must start with ray:// (example: ray://127.0.0.1:10001)")
-    
     reg = read_registry()
+    
+    # Auto-detect Ray cluster if no address provided
+    ray_address = args.address
+    if not ray_address:
+        ray_cluster = reg.get("ray_cluster", {})
+        head_info = ray_cluster.get("head_node")
+        if head_info:
+            try:
+                import psutil
+                proc = psutil.Process(int(head_info["pid"]))
+                if proc.is_running():
+                    ray_address = head_info["ray_address"]
+                    info(f"Auto-detected Ray cluster at {ray_address}")
+                else:
+                    die("Local Ray head node found but not running. Start with: alpaca ray-head")
+            except:
+                die("Local Ray head node found but status unknown. Start with: alpaca ray-head")
+        else:
+            die("No Ray address provided and no local cluster found. Start with: alpaca ray-head or provide --address")
+    
+    if not ray_address.startswith("ray://"):
+        die("Ray address must start with ray:// (example: ray://127.0.0.1:10001)")
+    
     alias, repo_spec = _model_for_token(reg, args.model)
     dtype = args.dtype or "auto"
     port = _find_or_allocate_port(reg, alias, args.port)
@@ -521,13 +892,13 @@ def cmd_serve_ray(args):
 
     # Set environment variables
     env = os.environ.copy()
-    env["RAY_ADDRESS"] = args.address
+    env["RAY_ADDRESS"] = ray_address
     env["RAY_NAMESPACE"] = args.namespace
     env["VLLM_USE_MODELSCOPE"] = "false"
     if token := fetch_env_token():
         env["HUGGING_FACE_HUB_TOKEN"] = token
 
-    info(f"Starting vLLM (Ray backend) on port {port}, address={args.address}")
+    info(f"Starting vLLM (Ray backend) on port {port}, address={ray_address}")
     
     # Start the process
     proc = subprocess.Popen(
@@ -544,7 +915,7 @@ def cmd_serve_ray(args):
 # Argument parsing
 # ----------------------------
 def build_parser():
-    p = argparse.ArgumentParser(prog="alpaca", description="Ollama-style wrapper for vLLM (Docker) + Ray.")
+    p = argparse.ArgumentParser(prog="alpaca", description="Ollama-style wrapper for vLLM with Ray cluster management.")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("pull", help="Prefetch a HF repo into local cache.")
@@ -592,10 +963,42 @@ def build_parser():
     sp.add_argument("--set", nargs="*", help="Set KEY=VAL pairs.")
     sp.set_defaults(func=cmd_config)
 
-    # Ray shared inference (simplified)
-    sp = sub.add_parser("serve-ray", help="Serve a model using Ray distributed executor (requires pre-existing Ray cluster).")
+    # Ray cluster management
+    sp = sub.add_parser("ray-head", help="Start Ray head node.")
+    sp.add_argument("--dashboard-port", type=int, help=f"Dashboard port (default {RAY_DASHBOARD_PORT}).")
+    sp.add_argument("--client-port", type=int, help=f"Ray client server port (default {RAY_CLIENT_PORT}).")
+    sp.add_argument("--gcs-port", type=int, help=f"Ray GCS port (default {RAY_GCS_PORT}).")
+    sp.add_argument("--no-dashboard", action="store_true", help="Disable Ray dashboard.")
+    sp.set_defaults(func=cmd_ray_head)
+
+    sp = sub.add_parser("ray-worker", help="Add Ray worker node to existing cluster.")
+    sp.add_argument("--address", required=True, help="Head node address, e.g. 127.0.0.1:6379")
+    sp.add_argument("--cpus", type=int, help="Number of CPUs for this worker.")
+    sp.add_argument("--gpus", type=int, help="Number of GPUs for this worker.")
+    sp.set_defaults(func=cmd_ray_worker)
+
+    sp = sub.add_parser("ray-status", help="Show Ray cluster status and resources.")
+    sp.set_defaults(func=cmd_ray_status)
+
+    sp = sub.add_parser("ray-down", help="Stop Ray cluster and cleanup.")
+    sp.set_defaults(func=cmd_ray_down)
+
+    sp = sub.add_parser("cluster-up", help="Start local Ray cluster with multiple workers.")
+    sp.add_argument("--cpu-workers", type=int, default=0, help="Number of CPU-only workers (default 0).")
+    sp.add_argument("--gpu-workers", type=int, default=1, help="Number of GPU workers (default 1).")
+    sp.add_argument("--cpus-per-worker", type=int, help="CPUs per worker (default auto).")
+    sp.add_argument("--dashboard-port", type=int, help=f"Dashboard port (default {RAY_DASHBOARD_PORT}).")
+    sp.add_argument("--client-port", type=int, help=f"Ray client server port (default {RAY_CLIENT_PORT}).")
+    sp.add_argument("--gcs-port", type=int, help=f"Ray GCS port (default {RAY_GCS_PORT}).")
+    sp.set_defaults(func=cmd_cluster_up)
+
+    sp = sub.add_parser("cluster-down", help="Stop local Ray cluster (alias for ray-down).")
+    sp.set_defaults(func=cmd_ray_down)
+
+    # Ray shared inference (enhanced)
+    sp = sub.add_parser("serve-ray", help="Serve a model using Ray distributed executor.")
     sp.add_argument("model", help="Alias or HF repo spec")
-    sp.add_argument("--address", required=True, help="Ray client address, e.g. ray://10.0.0.5:10001")
+    sp.add_argument("--address", help="Ray client address, e.g. ray://10.0.0.5:10001 (auto-detects if not provided)")
     sp.add_argument("--namespace", default="vllm", help="Ray namespace to use.")
     sp.add_argument("--port", type=int, help="Host port for API (default auto).")
     sp.add_argument("--dtype", choices=["auto", "float32", "bf16", "fp16"], help="Override dtype (default auto).")

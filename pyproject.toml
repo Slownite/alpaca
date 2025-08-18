@@ -30,16 +30,14 @@ dependencies = [
     "httpx", 
     "argcomplete", 
     "psutil",
-    "vllm"
+    "vllm",
+    "ray"
 ]
 
 [project.urls]
 Homepage = "https://github.com/Slownite/alpaca"
 Repository = "https://github.com/Slownite/alpaca.git"
 Issues = "https://github.com/Slownite/alpaca/issues"
-
-[project.optional-dependencies]
-ray = ["ray"]
 
 [project.scripts]
 alpaca = "alpaca:main"

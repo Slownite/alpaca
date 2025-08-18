@@ -468,7 +468,7 @@ def cmd_run(args):
         payload = _json.loads(Path(args.json).read_text())
     else:
         prompt = args.prompt or "Hello!"
-        payload = {"model":"unused","messages":[{"role":"user","content":prompt}],"max_tokens":128}
+        payload = {"model":server.get("repo", "unused"),"messages":[{"role":"user","content":prompt}],"max_tokens":128}
     r = httpx.post(url, json=payload, timeout=120)
     r.raise_for_status()
     print(json.dumps(r.json(), indent=2))

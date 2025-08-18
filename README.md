@@ -1,8 +1,8 @@
 # 🦙 Alpaca — Ollama-style vLLM Wrapper
 
-A streamlined CLI that brings Ollama's simplicity to [vLLM](https://github.com/vllm-project/vllm) with native Python processes, with optional distributed serving via [Ray](https://ray.io/). Pull, serve, and manage large language models with ease.
+A streamlined CLI that brings Ollama's simplicity to [vLLM](https://github.com/vllm-project/vllm) with native Python processes and optional distributed serving via [Ray](https://ray.io/). Pull, serve, and manage large language models with ease.
 
-> Requires CUDA GPU, Python 3.9+, and vLLM ([download](https://www.python.org/downloads/)). Licensed under [MIT](https://opensource.org/licenses/MIT).
+> Requires CUDA GPU, Python 3.9+, vLLM, and optional dependencies. Licensed under [MIT](https://opensource.org/licenses/MIT).
 
 ---
 
@@ -19,14 +19,14 @@ A streamlined CLI that brings Ollama's simplicity to [vLLM](https://github.com/v
 
 * **Direct vLLM integration** for maximum performance
 * **GPU-only operation** for optimal inference speed
-* **Process management** with PID tracking
-* **Easy port management** and networking
+* **Native Python processes** with PID tracking
+* **Automatic port allocation** and networking
 
 ### 🌐 Distributed inference
 
 * **Ray integration** for multi-node scaling
-* **Cluster orchestration** (head/worker helpers)
-* **Seamless multi-GPU / multi-node** deployments
+* **Manual cluster setup** (requires pre-existing Ray cluster)
+* **Distributed serving** for large models
 
 ---
 
@@ -44,39 +44,34 @@ python -c "import torch; print(torch.cuda.is_available())"  # Should print True
 
 ### Installation
 
-#### Option 1: pipx (recommended)
-
-```bash
-pipx install alpaca-cli
-```
-
-#### Option 2: pip
-
-```bash
-pip install alpaca-cli
-```
-
-#### Option 3: from source
+#### Option 1: from source (recommended)
 
 ```bash
 git clone https://github.com/Slownite/alpaca.git
 cd alpaca
 python -m venv venv
 source venv/bin/activate   # On Windows: venv\Scripts\activate
-pip install -e .
+pip install vllm huggingface_hub httpx psutil
+```
+
+#### Option 2: Direct dependencies
+
+```bash
+pip install vllm huggingface_hub httpx psutil
+# Then download alpaca.py and run directly
 ```
 
 ### Serve your first model
 
 ```bash
 # Pull a model from Hugging Face and alias it
-alpaca pull microsoft/DialoGPT-medium --alias chatbot
+python alpaca.py pull microsoft/DialoGPT-medium --alias chatbot
 
 # Start serving (GPU only)
-alpaca serve chatbot
+python alpaca.py serve chatbot
 
 # Test a prompt
-alpaca run chatbot -p "Hello, how are you today?"
+python alpaca.py run chatbot -p "Hello, how are you today?"
 ```
 
 ---
@@ -85,17 +80,17 @@ alpaca run chatbot -p "Hello, how are you today?"
 
 ### 🦙 Model Management
 
-| Command | Description               | Example                                 |
-| ------- | ------------------------- | --------------------------------------- |
-| `pull`  | Download model from HF    | `alpaca pull meta-llama/Llama-2-7b-hf`  |
-| `ls`    | List cached models        | `alpaca ls --size`                      |
-| `serve` | Start model server (GPU)  | `alpaca serve llama2 --port 8000`       |
-| `ps`    | List running processes    | `alpaca ps`                             |
-| `stop`  | Stop a server process     | `alpaca stop llama2`                    |
-| `rm`    | Remove process/alias      | `alpaca rm llama2 --purge`              |
-| `run`   | Send test request         | `alpaca run llama2 -p "Tell me a joke"` |
-| `logs`  | Show process info         | `alpaca logs llama2`                    |
-| `config`| Show/set configuration    | `alpaca config --show`                  |
+| Command | Description               | Example                                            |
+| ------- | ------------------------- | -------------------------------------------------- |
+| `pull`  | Download model from HF    | `python alpaca.py pull meta-llama/Llama-2-7b-hf`  |
+| `ls`    | List cached models        | `python alpaca.py ls --size`                      |
+| `serve` | Start model server (GPU)  | `python alpaca.py serve llama2 --port 8000`       |
+| `ps`    | List running processes    | `python alpaca.py ps`                             |
+| `stop`  | Stop a server process     | `python alpaca.py stop llama2`                    |
+| `rm`    | Remove process/alias      | `python alpaca.py rm llama2 --purge`              |
+| `run`   | Send test request         | `python alpaca.py run llama2 -p "Tell me a joke"` |
+| `logs`  | Show process info         | `python alpaca.py logs llama2`                    |
+| `config`| Show/set configuration    | `python alpaca.py config --show`                  |
 
 **Serve options**
 
@@ -105,11 +100,11 @@ alpaca run chatbot -p "Hello, how are you today?"
 
 ### 🌐 Distributed (Ray)
 
-| Command        | Description                           | Example                                              |
-| -------------- | ------------------------------------- | ---------------------------------------------------- |
-| `serve-ray`    | Serve with Ray backend (requires pre-existing Ray cluster) | `alpaca serve-ray llama2 --address ray://head:10001` |
+| Command        | Description                           | Example                                                           |
+| -------------- | ------------------------------------- | ----------------------------------------------------------------- |
+| `serve-ray`    | Serve with Ray backend (requires pre-existing Ray cluster) | `python alpaca.py serve-ray llama2 --address ray://head:10001` |
 
-**Note**: Ray cluster management is simplified. You need to set up Ray cluster manually using `ray start --head` and `ray start --address=<head-ip>:6379` on worker nodes.
+**Note**: Ray cluster management is manual. You need to set up Ray cluster using `ray start --head` and `ray start --address=<head-ip>:6379` on worker nodes.
 
 ---
 
@@ -118,16 +113,16 @@ alpaca run chatbot -p "Hello, how are you today?"
 ### Local development
 
 ```bash
-alpaca pull facebook/opt-125m --alias tiny
-alpaca serve tiny
-alpaca run tiny -p "The future of AI is"
+python alpaca.py pull facebook/opt-125m --alias tiny
+python alpaca.py serve tiny
+python alpaca.py run tiny -p "The future of AI is"
 ```
 
 ### Production serving
 
 ```bash
-alpaca pull meta-llama/Llama-2-7b-chat-hf --alias llama2-chat
-alpaca serve llama2-chat --dtype bf16 --max-seqs 64
+python alpaca.py pull meta-llama/Llama-2-7b-chat-hf --alias llama2-chat
+python alpaca.py serve llama2-chat --dtype bf16 --max-seqs 64
 ```
 
 ### Multi-node deployment
@@ -140,7 +135,7 @@ ray start --head --dashboard-port=8265
 ray start --address=HEAD_IP:6379
 
 # Serve distributed model
-alpaca serve-ray llama2-70b --address ray://HEAD_IP:10001
+python alpaca.py serve-ray llama2-70b --address ray://HEAD_IP:10001
 ```
 
 ### Custom API requests
@@ -148,10 +143,10 @@ alpaca serve-ray llama2-70b --address ray://HEAD_IP:10001
 ```bash
 # Send custom JSON payload
 echo '{"model":"llama2","messages":[{"role":"user","content":"Explain quantum computing"}],"max_tokens":100}' > request.json
-alpaca run llama2 --json request.json
+python alpaca.py run llama2 --json request.json
 
 # Use a different API endpoint
-alpaca run llama2 --path /v1/completions -p "Once upon a time"
+python alpaca.py run llama2 --path /v1/completions -p "Once upon a time"
 ```
 
 ---
@@ -173,10 +168,10 @@ export HUGGING_FACE_HUB_TOKEN="your_token_here"      # For private models
 
 ```bash
 # Show current configuration
-alpaca config --show
+python alpaca.py config --show
 
 # Set configuration values
-alpaca config --set max_workers=4 --set timeout=300
+python alpaca.py config --set max_workers=4 --set timeout=300
 ```
 
 ---
@@ -185,18 +180,18 @@ alpaca config --set max_workers=4 --set timeout=300
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Alpaca CLI    │    │  Docker Engine  │    │  Hugging Face   │
-│ • Model mgmt    │────│ • vLLM containers│────│ • Model storage │
-│ • Process ctrl  │    │ • Resource mgmt │    │ • Tokenizers    │
-│ • Ray orchestr. │    │ • Networking    │    │ • Configs       │
+│   Alpaca CLI    │    │   vLLM Native   │    │  Hugging Face   │
+│ • Model mgmt    │────│ • Python procs  │────│ • Model storage │
+│ • Process ctrl  │    │ • GPU serving   │    │ • Tokenizers    │
+│ • Ray orchestr. │    │ • Port mgmt     │    │ • Configs       │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
           │                        │
           ▼                        ▼
 ┌─────────────────┐    ┌─────────────────┐
 │   Ray Cluster   │    │  Local Hardware │
-│ • Multi-node    │    │ • CPU / GPU     │
-│ • Load balance  │    │ • Memory        │
-│ • Fault tol.    │    │ • Storage       │
+│ • Multi-node    │    │ • CUDA GPU      │
+│ • Distributed   │    │ • Memory        │
+│ • (Optional)    │    │ • Storage       │
 └─────────────────┘    └─────────────────┘
 ```
 
@@ -208,7 +203,7 @@ alpaca config --set max_workers=4 --set timeout=300
 | -------------- | -------------- | ------------ | -------------- | --------------- |
 | Ease of Use    | ✅ Simple CLI   | ✅ Simple CLI | ❌ Complex      | ❌ Code required |
 | HF Integration | ✅ Native       | ❌ Manual     | ✅ Native       | ✅ Native        |
-| Docker Support | ✅ Built-in     | ❌ No         | ❌ Manual       | ❌ Manual        |
+| Native Python  | ✅ Direct       | ❌ Compiled   | ✅ Direct       | ✅ Direct        |
 | Distributed    | ✅ Ray support  | ❌ No         | ✅ Manual setup | ❌ No            |
 | Process Mgmt   | ✅ Built-in     | ✅ Built-in   | ❌ Manual       | ❌ Manual        |
 | Performance    | ✅ vLLM backend | ❌ llama.cpp  | ✅ vLLM         | ❌ Basic         |
@@ -218,48 +213,53 @@ alpaca config --set max_workers=4 --set timeout=300
 
 ## 🐛 Troubleshooting
 
-### Docker issues
+### Dependencies
 
 ```bash
-# Check Docker is running
-docker version
+# Check if vLLM is installed
+python -c "import vllm; print('vLLM OK')"
 
-# Check available images
-docker images | grep vllm
+# Check CUDA availability
+python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}')"
 
-# Clean up stopped containers
-docker container prune
+# Install missing dependencies
+pip install vllm huggingface_hub httpx psutil
 ```
 
 ### Common issues
 
-**Docker daemon not running**
+**GPU not detected**
 
 ```bash
-# Start Docker service (varies by OS)
-sudo systemctl start docker  # Linux
-# Or start Docker Desktop app
+# Check NVIDIA driver
+nvidia-smi
+
+# Check PyTorch CUDA
+python -c "import torch; print(torch.cuda.is_available())"
 ```
 
 **Port conflicts (address in use)**
 
 ```bash
-alpaca ps
-alpaca stop <model-name>
-```
-
-**GPU not detected**
-
-```bash
-# Check Docker has NVIDIA runtime
-docker run --rm --gpus all nvidia/cuda:12.2.0-base nvidia-smi
+python alpaca.py ps
+python alpaca.py stop <model-name>
 ```
 
 **OOM during serving**
 
 ```bash
-alpaca serve <model> --dtype fp16
-alpaca serve <model> --max-seqs 16
+python alpaca.py serve <model> --dtype fp16
+python alpaca.py serve <model> --max-seqs 16
+```
+
+**Process management issues**
+
+```bash
+# Check running processes
+python alpaca.py ps
+
+# Kill stuck processes
+python alpaca.py stop <model-name>
 ```
 
 ---
@@ -279,7 +279,7 @@ git clone https://github.com/Slownite/alpaca.git
 cd alpaca
 python -m venv dev-env
 source dev-env/bin/activate
-pip install -e .
+pip install vllm huggingface_hub httpx psutil
 ```
 
 ---
@@ -307,4 +307,4 @@ This project is licensed under the MIT License. See the `LICENSE` file for detai
 
 ---
 
-Alpaca combines the ease of Ollama with the power and flexibility of vLLM, making large-language-model deployment accessible to everyone. 🦙✨
+Alpaca combines the ease of Ollama with the power of native vLLM, making large-language-model deployment accessible to everyone. 🦙✨

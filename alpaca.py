@@ -366,11 +366,6 @@ def _model_for_token(reg, token: str) -> Tuple[str, str]:
         write_registry(reg)
     return alias, repo_spec
 
-def _docker_labels(base: Dict[str, str]) -> List[str]:
-    res = []
-    for k, v in base.items():
-        res += ["--label", f"{k}={v}"]
-    return res
 
 def cmd_serve(args):
     ensure_vllm(); ensure_cache(); ensure_state()
@@ -835,7 +830,7 @@ def cmd_cluster_up(args):
     print(f"Use 'alpaca serve-ray <model> --address {head_info['ray_address']}' to serve models")
 
 # ----------------------------
-# Ray shared inference (simplified - requires manual Ray setup)
+# Ray distributed inference
 # ----------------------------
 def cmd_serve_ray(args):
     """Launch vLLM server with Ray distributed executor."""

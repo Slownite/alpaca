@@ -213,18 +213,18 @@ python alpaca.py config --set max_workers=4 --set timeout=300
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Alpaca CLI    │    │   vLLM Native   │    │  Hugging Face   │
-│ • Model mgmt    │────│ • Python procs  │────│ • Model storage │
-│ • Process ctrl  │    │ • GPU serving   │    │ • Tokenizers    │
-│ • Ray orchestr. │    │ • Port mgmt     │    │ • Configs       │
+│   Alpaca CLI    │    │   vLLM Engine   │    │  Hugging Face   │
+│ • Model mgmt    │────│ • Native Python │────│ • Model cache   │
+│ • Process ctrl  │    │ • GPU inference │    │ • Tokenizers    │
+│ • Ray clusters  │    │ • API serving   │    │ • Configs       │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
           │                        │
           ▼                        ▼
 ┌─────────────────┐    ┌─────────────────┐
-│   Ray Cluster   │    │  Local Hardware │
-│ • Multi-node    │    │ • CUDA GPU      │
-│ • Distributed   │    │ • Memory        │
-│ • (Optional)    │    │ • Storage       │
+│   Ray Cluster   │    │  System Resources│
+│ • Head + Workers│    │ • CUDA GPUs     │
+│ • Distributed   │    │ • CPU cores     │
+│ • Auto-managed  │    │ • Memory        │
 └─────────────────┘    └─────────────────┘
 ```
 

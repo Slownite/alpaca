@@ -1,8 +1,8 @@
 # 🦙 Alpaca — Ollama-style vLLM Wrapper
 
-A streamlined CLI that brings Ollama's simplicity to [vLLM](https://github.com/vllm-project/vllm) with native Python processes and optional distributed serving via [Ray](https://ray.io/). Pull, serve, and manage large language models with ease.
+A streamlined CLI that brings Ollama's simplicity to [vLLM](https://github.com/vllm-project/vllm) with native Python processes and automated [Ray](https://ray.io/) cluster management. Pull, serve, and scale large language models across multiple nodes with ease.
 
-> Requires CUDA GPU, Python 3.9+, vLLM, and optional dependencies. Licensed under [MIT](https://opensource.org/licenses/MIT).
+> Requires CUDA GPU, Python 3.9+, vLLM, Ray (for distributed clusters), and dependencies. Licensed under [MIT](https://opensource.org/licenses/MIT).
 
 ---
 
@@ -22,11 +22,13 @@ A streamlined CLI that brings Ollama's simplicity to [vLLM](https://github.com/v
 * **Native Python processes** with PID tracking
 * **Automatic port allocation** and networking
 
-### 🌐 Distributed inference
+### 🌐 Ray cluster management
 
-* **Ray integration** for multi-node scaling
-* **Manual cluster setup** (requires pre-existing Ray cluster)
-* **Distributed serving** for large models
+* **Automated cluster lifecycle** - start, monitor, and stop Ray clusters
+* **Multi-node scaling** with worker node management
+* **Resource control** - specify CPUs/GPUs per worker
+* **Auto-discovery** - seamless integration with local clusters
+* **Distributed serving** for large models across nodes
 
 ---
 
@@ -51,13 +53,13 @@ git clone https://github.com/Slownite/alpaca.git
 cd alpaca
 python -m venv venv
 source venv/bin/activate   # On Windows: venv\Scripts\activate
-pip install vllm huggingface_hub httpx psutil
+pip install vllm huggingface_hub httpx psutil ray
 ```
 
 #### Option 2: Direct dependencies
 
 ```bash
-pip install vllm huggingface_hub httpx psutil
+pip install vllm huggingface_hub httpx psutil ray
 # Then download alpaca.py and run directly
 ```
 
@@ -98,13 +100,28 @@ python alpaca.py run chatbot -p "Hello, how are you today?"
 * `--dtype {auto,float32,bf16,fp16}` precision
 * `--max-seqs N` max concurrent sequences
 
-### 🌐 Distributed (Ray)
+### 🌐 Ray Cluster Management
+
+| Command         | Description                               | Example                                                        |
+| --------------- | ----------------------------------------- | -------------------------------------------------------------- |
+| `ray-head`      | Start Ray head node                      | `python alpaca.py ray-head --dashboard-port 8265`             |
+| `ray-worker`    | Add worker node to cluster               | `python alpaca.py ray-worker --address 127.0.0.1:6379 --gpus 1` |
+| `ray-status`    | Show cluster status and resources        | `python alpaca.py ray-status`                                 |
+| `ray-down`      | Stop Ray cluster and cleanup             | `python alpaca.py ray-down`                                   |
+| `cluster-up`    | Start local cluster with workers        | `python alpaca.py cluster-up --gpu-workers 2`                 |
+| `cluster-down`  | Stop local cluster                       | `python alpaca.py cluster-down`                               |
+
+### 🚀 Distributed Inference
 
 | Command        | Description                           | Example                                                           |
 | -------------- | ------------------------------------- | ----------------------------------------------------------------- |
-| `serve-ray`    | Serve with Ray backend (requires pre-existing Ray cluster) | `python alpaca.py serve-ray llama2 --address ray://head:10001` |
+| `serve-ray`    | Serve with Ray backend               | `python alpaca.py serve-ray llama2` (auto-detects local cluster) |
 
-**Note**: Ray cluster management is manual. You need to set up Ray cluster using `ray start --head` and `ray start --address=<head-ip>:6379` on worker nodes.
+**Ray cluster options**
+* `--dashboard-port PORT` dashboard port (default: 8265)
+* `--client-port PORT` Ray client port (default: 10001)  
+* `--gcs-port PORT` Ray GCS port (default: 6379)
+* `--cpus N` / `--gpus N` resources per worker
 
 ---
 
@@ -125,14 +142,30 @@ python alpaca.py pull meta-llama/Llama-2-7b-chat-hf --alias llama2-chat
 python alpaca.py serve llama2-chat --dtype bf16 --max-seqs 64
 ```
 
+### Distributed Ray cluster
+
+```bash
+# Start local Ray cluster with 2 GPU workers
+python alpaca.py cluster-up --gpu-workers 2 --cpus-per-worker 4
+
+# Check cluster status
+python alpaca.py ray-status
+
+# Serve distributed model (auto-detects cluster)
+python alpaca.py serve-ray llama2-70b
+
+# Stop cluster when done
+python alpaca.py ray-down
+```
+
 ### Multi-node deployment
 
 ```bash
 # On head node
-ray start --head --dashboard-port=8265
+python alpaca.py ray-head --dashboard-port 8265
 
 # On worker nodes  
-ray start --address=HEAD_IP:6379
+python alpaca.py ray-worker --address HEAD_IP:6379 --gpus 1
 
 # Serve distributed model
 python alpaca.py serve-ray llama2-70b --address ray://HEAD_IP:10001
@@ -204,7 +237,7 @@ python alpaca.py config --set max_workers=4 --set timeout=300
 | Ease of Use    | ✅ Simple CLI   | ✅ Simple CLI | ❌ Complex      | ❌ Code required |
 | HF Integration | ✅ Native       | ❌ Manual     | ✅ Native       | ✅ Native        |
 | Native Python  | ✅ Direct       | ❌ Compiled   | ✅ Direct       | ✅ Direct        |
-| Distributed    | ✅ Ray support  | ❌ No         | ✅ Manual setup | ❌ No            |
+| Distributed    | ✅ Ray clusters | ❌ No         | ✅ Manual setup | ❌ No            |
 | Process Mgmt   | ✅ Built-in     | ✅ Built-in   | ❌ Manual       | ❌ Manual        |
 | Performance    | ✅ vLLM backend | ❌ llama.cpp  | ✅ vLLM         | ❌ Basic         |
 | Model Formats  | ✅ HF           | ✅ GGUF       | ✅ HF           | ✅ HF            |
@@ -223,7 +256,7 @@ python -c "import vllm; print('vLLM OK')"
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}')"
 
 # Install missing dependencies
-pip install vllm huggingface_hub httpx psutil
+pip install vllm huggingface_hub httpx psutil ray
 ```
 
 ### Common issues
@@ -262,6 +295,20 @@ python alpaca.py ps
 python alpaca.py stop <model-name>
 ```
 
+**Ray cluster issues**
+
+```bash
+# Check Ray cluster status
+python alpaca.py ray-status
+
+# Stop and restart cluster
+python alpaca.py ray-down
+python alpaca.py ray-head
+
+# Check Ray installation
+python -c "import ray; print('Ray OK')"
+```
+
 ---
 
 ## 🤝 Contributing
@@ -279,7 +326,7 @@ git clone https://github.com/Slownite/alpaca.git
 cd alpaca
 python -m venv dev-env
 source dev-env/bin/activate
-pip install vllm huggingface_hub httpx psutil
+pip install vllm huggingface_hub httpx psutil ray
 ```
 
 ---

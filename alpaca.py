@@ -639,7 +639,7 @@ def _ensure_local_ray_worker(ray_address):
     # Not in a Ray worker, try to start one
     info("Starting local Ray worker to connect to cluster...")
     
-    # Parse the Ray address to get the head address
+    # Parse the Ray address to get the GCS address
     if ray_address.startswith("ray://"):
         # Extract host:port from ray://host:port
         head_address = ray_address[6:]  # Remove "ray://" prefix
@@ -651,7 +651,15 @@ def _ensure_local_ray_worker(ray_address):
         die("Invalid Ray address format. Use ray://host:port")
     
     try:
+        # First stop any existing Ray instance
+        try:
+            run(["ray", "stop"], check=False, capture=True)
+            time.sleep(1)
+        except:
+            pass
+        
         # Start Ray worker connected to head
+        info(f"Connecting Ray worker to {head_gcs_address}...")
         ray_cmd = ["ray", "start", "--address", head_gcs_address]
         result = run(ray_cmd, capture=True)
         if result.returncode != 0:
@@ -660,10 +668,16 @@ def _ensure_local_ray_worker(ray_address):
         # Wait a moment for worker to register
         time.sleep(3)
         
-        # Re-initialize Ray to connect as client
+        # Set RAY_ADDRESS environment variable for vLLM
+        import os
+        os.environ["RAY_ADDRESS"] = head_gcs_address  # Use GCS address, not client address
+        
+        # Initialize Ray client to verify connection
         if ray.is_initialized():
             ray.shutdown()
-        ray.init(address=ray_address)
+        
+        # Connect as client but ensure we're now in worker context
+        ray.init(address=head_gcs_address)
         
         # Verify we're now in a worker
         ray.get_runtime_context().get_node_id()
@@ -672,7 +686,10 @@ def _ensure_local_ray_worker(ray_address):
         
     except Exception as e:
         info(f"Failed to start local Ray worker: {e}")
-        info("You may need to manually start Ray: ray start --address=<head_address>")
+        info("Manual steps:")
+        info(f"1. ray stop")
+        info(f"2. ray start --address={head_gcs_address}")
+        info(f"3. export RAY_ADDRESS={head_gcs_address}")
         return False
 
 def cmd_logs(args):
@@ -1167,7 +1184,17 @@ def cmd_serve_ray(args):
 
     # Set environment variables
     env = os.environ.copy()
-    env["RAY_ADDRESS"] = ray_address
+    
+    # Convert ray:// address to GCS address for RAY_ADDRESS env var
+    if ray_address.startswith("ray://"):
+        head_address = ray_address[6:]  # Remove "ray://" prefix
+        host, client_port = head_address.split(":")
+        gcs_port = int(client_port) - 10001 + 6379  # Default mapping
+        gcs_address = f"{host}:{gcs_port}"
+        env["RAY_ADDRESS"] = gcs_address  # Use GCS address for vLLM
+    else:
+        env["RAY_ADDRESS"] = ray_address
+    
     env["RAY_NAMESPACE"] = args.namespace
     env["VLLM_USE_MODELSCOPE"] = "false"
     if token := fetch_env_token():

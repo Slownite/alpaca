@@ -16,13 +16,15 @@ Commands (local):
 Ray cluster management:
   ray-head     [--dashboard-port 8265] [--client-port 10001] [--gcs-port 6379]
   ray-worker   --address <HEAD_IP:6379> [--cpus N] [--gpus N]
+  ray-connect  --address <HEAD_IP:6379> (connect to external cluster as worker)
   ray-status   (show cluster status and resources)
   ray-down     (stop & cleanup Ray cluster)
 
 Ray distributed inference:
   serve-ray <model-or-alias> [--address ray://<HEAD_IP>:10001] [--namespace vllm]
             [--port <p>] [--dtype auto|float32|bf16|fp16] [--max-seqs N]
-            (auto-detects local Ray cluster if no address provided)
+            [--auto-fallback] (auto-detects local Ray cluster if no address provided)
+            NOTE: Requires running inside a Ray worker. Use ray-connect first if needed.
 
 Convenience cluster helpers (single host):
   cluster-up   [--cpu-workers N] [--gpu-workers N] [--cpus-per-worker M]
@@ -559,6 +561,8 @@ def _validate_ray_cluster(ray_address):
             info(f"Ray cluster validated: {total_cpus} CPUs ({available_cpus} available)")
             if total_gpus > 0:
                 info(f"GPU resources: {total_gpus} total ({available_gpus} available)")
+            else:
+                info("Warning: No GPU resources detected in Ray cluster")
             
             # Check for active nodes
             nodes = ray.nodes()
@@ -567,6 +571,9 @@ def _validate_ray_cluster(ray_address):
                 die("No alive nodes found in Ray cluster")
             
             info(f"Ray cluster ready: {len(alive_nodes)} active nodes")
+            
+            # Test Ray distributed executor compatibility
+            _test_ray_distributed_compatibility()
             
         except Exception as e:
             die(f"Failed to validate Ray cluster resources: {e}")
@@ -578,6 +585,85 @@ def _validate_ray_cluster(ray_address):
     finally:
         # Leave Ray initialized for vLLM to use
         pass
+
+def _test_ray_distributed_compatibility():
+    """Test if vLLM's Ray distributed executor is available."""
+    try:
+        import ray
+        
+        # Check if we're running inside a Ray worker node
+        try:
+            # This will fail if we're not inside a Ray worker
+            ray.get_runtime_context().get_node_id()
+            info("Ray distributed executor compatibility: OK (running inside Ray worker)")
+        except Exception:
+            info("Warning: Not running inside a Ray worker node")
+            info("vLLM with Ray backend requires running inside a Ray worker process")
+            info("For external Ray clusters, start Ray locally first: ray start --address=<head_address>")
+            raise RuntimeError("vLLM Ray distributed executor requires local Ray worker")
+        
+        # Try to import vLLM's Ray executor components
+        from vllm.executor.ray_executor import RayExecutor
+        info("Ray executor import: OK")
+        
+    except ImportError as e:
+        info(f"Warning: Ray distributed executor may not be available: {e}")
+        info("This might cause vLLM startup failures with Ray backend")
+        raise
+    except Exception as e:
+        info(f"Warning: Could not verify Ray distributed executor: {e}")
+        raise
+
+def _ensure_local_ray_worker(ray_address):
+    """Ensure we're running inside a Ray worker, start one if needed."""
+    import ray
+    
+    # Check if we're already in a Ray worker
+    try:
+        ray.get_runtime_context().get_node_id()
+        info("Already running inside Ray worker")
+        return True
+    except Exception:
+        pass
+    
+    # Not in a Ray worker, try to start one
+    info("Starting local Ray worker to connect to cluster...")
+    
+    # Parse the Ray address to get the head address
+    if ray_address.startswith("ray://"):
+        # Extract host:port from ray://host:port
+        head_address = ray_address[6:]  # Remove "ray://" prefix
+        # Convert client port to GCS port (typically client_port - 4000 + 6379)
+        host, client_port = head_address.split(":")
+        gcs_port = int(client_port) - 10001 + 6379  # Default mapping
+        head_gcs_address = f"{host}:{gcs_port}"
+    else:
+        die("Invalid Ray address format. Use ray://host:port")
+    
+    try:
+        # Start Ray worker connected to head
+        ray_cmd = ["ray", "start", "--address", head_gcs_address]
+        result = run(ray_cmd, capture=True)
+        if result.returncode != 0:
+            raise Exception(f"Ray start failed: {result.stderr}")
+        
+        # Wait a moment for worker to register
+        time.sleep(3)
+        
+        # Re-initialize Ray to connect as client
+        if ray.is_initialized():
+            ray.shutdown()
+        ray.init(address=ray_address)
+        
+        # Verify we're now in a worker
+        ray.get_runtime_context().get_node_id()
+        info("Successfully started and connected to Ray worker")
+        return True
+        
+    except Exception as e:
+        info(f"Failed to start local Ray worker: {e}")
+        info("You may need to manually start Ray: ray start --address=<head_address>")
+        return False
 
 def cmd_logs(args):
     reg = read_registry()
@@ -929,6 +1015,26 @@ def cmd_ray_down(args):
     else:
         print("Ray cluster stopped (no running processes found)")
 
+def cmd_ray_connect(args):
+    """Connect to external Ray cluster as a worker."""
+    ensure_ray()
+    
+    head_address = args.address
+    info(f"Connecting to Ray cluster at {head_address}...")
+    
+    try:
+        # Start Ray worker connected to head
+        ray_cmd = ["ray", "start", "--address", head_address]
+        result = run(ray_cmd, capture=True)
+        if result.returncode != 0:
+            die(f"Failed to connect to Ray cluster: {result.stderr}")
+        
+        info("Successfully connected to Ray cluster as worker")
+        info("You can now use 'alpaca serve-ray' to serve models on this cluster")
+        
+    except Exception as e:
+        die(f"Failed to connect to Ray cluster: {e}")
+
 def cmd_cluster_up(args):
     """Start a local Ray cluster with multiple workers."""
     ensure_ray()
@@ -1020,6 +1126,10 @@ def cmd_serve_ray(args):
     if not ray_address.startswith("ray://"):
         die("Ray address must start with ray:// (example: ray://127.0.0.1:10001)")
     
+    # Ensure we're running in a Ray worker (required for vLLM Ray backend)
+    if not _ensure_local_ray_worker(ray_address):
+        die("Failed to start local Ray worker. vLLM Ray backend requires running inside a Ray worker.")
+    
     # Validate Ray cluster before proceeding
     _validate_ray_cluster(ray_address)
     
@@ -1040,7 +1150,9 @@ def cmd_serve_ray(args):
         "--port", str(port),
         "--dtype", dtype,
         "--distributed-executor-backend", "ray",
-        "--max-num-seqs", str(args.max_seqs or MAX_SEQS_DEFAULT)
+        "--max-num-seqs", str(args.max_seqs or MAX_SEQS_DEFAULT),
+        "--disable-log-requests",  # Reduce noise
+        "--trust-remote-code"      # Often needed for models
     ]
 
     # Set environment variables
@@ -1065,11 +1177,38 @@ def cmd_serve_ray(args):
     )
     
     # Give process a moment to start and potentially fail fast
-    time.sleep(2)
+    time.sleep(5)
     
     # Check if process is still running
     if proc.poll() is not None:
-        die(f"vLLM process failed to start (exit code {proc.returncode}). Check the output above for errors.")
+        exit_code = proc.returncode
+        info(f"vLLM process failed to start (exit code {exit_code})")
+        
+        # Common failure reasons and suggestions
+        if exit_code == 1:
+            info("Common causes:")
+            info("- Model not found or not accessible")
+            info("- Ray cluster not properly initialized")
+            info("- Insufficient GPU memory")
+            info("- vLLM version incompatibility")
+        
+        # Offer automatic fallback to regular serve
+        if hasattr(args, 'auto_fallback') and args.auto_fallback:
+            info(f"Attempting fallback to regular serve mode...")
+            fallback_args = type('obj', (object,), {
+                'model': args.model,
+                'port': args.port,
+                'dtype': args.dtype,
+                'max_seqs': args.max_seqs
+            })
+            try:
+                cmd_serve(fallback_args)
+                return
+            except Exception as fallback_error:
+                info(f"Fallback also failed: {fallback_error}")
+        
+        info(f"Try running without Ray: alpaca serve {args.model}")
+        sys.exit(1)
     
     _post_start_health(alias, port, repo_spec, proc.pid, "ray", dtype)
 
@@ -1157,6 +1296,10 @@ def build_parser():
     sp = sub.add_parser("cluster-down", help="Stop local Ray cluster (alias for ray-down).")
     sp.set_defaults(func=cmd_ray_down)
 
+    sp = sub.add_parser("ray-connect", help="Connect to external Ray cluster as worker.")
+    sp.add_argument("--address", required=True, help="Head node GCS address, e.g. 127.0.0.1:6379")
+    sp.set_defaults(func=cmd_ray_connect)
+
     # Ray shared inference (enhanced)
     sp = sub.add_parser("serve-ray", help="Serve a model using Ray distributed executor.")
     sp.add_argument("model", help="Alias or HF repo spec")
@@ -1165,6 +1308,7 @@ def build_parser():
     sp.add_argument("--port", type=int, help="Host port for API (default auto).")
     sp.add_argument("--dtype", choices=["auto", "float32", "bf16", "fp16"], help="Override dtype (default auto).")
     sp.add_argument("--max-seqs", type=int, help=f"Max concurrent sequences (default {MAX_SEQS_DEFAULT}).")
+    sp.add_argument("--auto-fallback", action="store_true", help="Automatically fallback to regular serve if Ray fails.")
     sp.set_defaults(func=cmd_serve_ray)
 
     return p

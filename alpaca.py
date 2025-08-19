@@ -602,9 +602,19 @@ def _test_ray_distributed_compatibility():
             info("For external Ray clusters, start Ray locally first: ray start --address=<head_address>")
             raise RuntimeError("vLLM Ray distributed executor requires local Ray worker")
         
-        # Try to import vLLM's Ray executor components
-        from vllm.executor.ray_executor import RayExecutor
-        info("Ray executor import: OK")
+        # Try to import vLLM's Ray executor components (try current path first)
+        try:
+            from vllm.executor.ray_distributed_executor import RayDistributedExecutor
+            info("Ray executor import: OK (vllm.executor.ray_distributed_executor)")
+        except ImportError:
+            try:
+                # Fallback to older path
+                from vllm.executor.ray_executor import RayExecutor
+                info("Ray executor import: OK (vllm.executor.ray_executor)")
+            except ImportError:
+                info("Warning: Could not find Ray executor in vLLM installation")
+                info("Your vLLM version may not support Ray distributed execution")
+                info("Try: pip install vllm[ray] or pip install 'vllm>=0.2.0'")
         
     except ImportError as e:
         info(f"Warning: Ray distributed executor may not be available: {e}")

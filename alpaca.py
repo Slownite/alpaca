@@ -555,33 +555,21 @@ def cmd_ray_head(args):
     if result.returncode != 0:
         die(f"Failed to start Ray head node: {result.stderr}")
     
-    # Find the Ray head process
+    # Find the raylet process (Ray head node)
     time.sleep(2)  # Give it time to start
-    ray_processes = get_ray_processes()
+    import psutil
     head_pid = None
-    for proc in ray_processes:
-        cmdline = proc['cmdline']
-        # Look for Ray head processes more broadly
-        if ("ray start" in cmdline and "--head" in cmdline) or "raylet" in cmdline:
-            head_pid = proc['pid']
-            break
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time']):
+        try:
+            proc_name = proc.info['name'] or ''
+            if 'raylet' in proc_name.lower():
+                head_pid = str(proc.info['pid'])
+                break
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
     
     if not head_pid:
-        # Fallback: try to find any Ray process that was started recently
-        import psutil
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time']):
-            try:
-                cmdline = proc.info['cmdline'] or []
-                cmdline_str = ' '.join(cmdline)
-                if (any('ray' in arg.lower() for arg in cmdline) and 
-                    (time.time() - proc.info['create_time']) < 60):  # Started within last minute
-                    head_pid = str(proc.info['pid'])
-                    break
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-        
-        if not head_pid:
-            info("Warning: Could not find Ray head process, but Ray may still be running")
+        info("Warning: Could not find raylet process, but Ray may still be running")
     
     # Update registry
     reg.setdefault("ray_cluster", {})

@@ -46,20 +46,26 @@ python -c "import torch; print(torch.cuda.is_available())"  # Should print True
 
 ### Installation
 
-#### Option 1: from source (recommended)
+#### Option 1: pipx (recommended)
+
+```bash
+pipx install git+https://github.com/Slownite/alpaca.git
+```
+
+#### Option 2: from source
 
 ```bash
 git clone https://github.com/Slownite/alpaca.git
 cd alpaca
 python -m venv venv
 source venv/bin/activate   # On Windows: venv\Scripts\activate
-pip install vllm huggingface_hub httpx psutil ray
+pip install -e .
 ```
 
-#### Option 2: Direct dependencies
+#### Option 3: Direct dependencies
 
 ```bash
-pip install vllm huggingface_hub httpx psutil ray
+pip install vllm huggingface_hub httpx psutil ray[default]
 # Then download alpaca.py and run directly
 ```
 
@@ -256,7 +262,7 @@ python -c "import vllm; print('vLLM OK')"
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}')"
 
 # Install missing dependencies
-pip install vllm huggingface_hub httpx psutil ray
+pip install vllm huggingface_hub httpx psutil ray[default]
 ```
 
 ### Common issues
@@ -326,7 +332,7 @@ git clone https://github.com/Slownite/alpaca.git
 cd alpaca
 python -m venv dev-env
 source dev-env/bin/activate
-pip install vllm huggingface_hub httpx psutil ray
+pip install -e .
 ```
 
 ---

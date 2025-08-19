@@ -563,9 +563,9 @@ def cmd_ray_head(args):
         try:
             proc_name = proc.info['name'] or ''
             print(proc_name)
-            print(proc.info['cmdline'])
             if 'raylet' in proc_name.lower():
                 head_pid = str(proc.info['pid'])
+                print(head_pid)
                 break
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue

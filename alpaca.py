@@ -90,6 +90,12 @@ def ensure_vllm():
     except ImportError:
         die("vLLM not installed. Run: pip install vllm")
 
+def ensure_httpx():
+    try:
+        import httpx
+    except ImportError:
+        die("httpx not installed. Run: pip install httpx")
+
 def sanitize(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", name.replace("/", "_").replace(":", "_"))
 
@@ -435,6 +441,8 @@ def _ray_health_check(alias, port, repo_spec, pid, dtype):
         # First check Ray cluster connectivity
         ray_ok = False
         http_ok = False
+        cluster_resources = {}
+        available_resources = {}
         
         info("Checking Ray cluster connectivity...")
         try:
@@ -459,15 +467,18 @@ def _ray_health_check(alias, port, repo_spec, pid, dtype):
         
         # Extended timeout for Ray servers (3 minutes)
         info("Checking HTTP endpoint health...")
+        info("Note: vLLM with Ray backend may take several minutes to initialize...")
         for i in range(360):
             try:
-                r = httpx.get(f"{base}/v1/models", timeout=3)
+                r = httpx.get(f"{base}/v1/models", timeout=5)
                 if r.status_code == 200:
                     http_ok = True
                     break
             except Exception as e:
-                if i % 60 == 0:  # Log every 30 seconds
-                    info(f"HTTP health check attempt {i//60 + 1}/6: {e}")
+                if i % 60 == 0 and i > 0:  # Log every 30 seconds (60 * 0.5s)
+                    info(f"HTTP health check attempt {i//60 + 1}/6: [Errno {getattr(e, 'errno', 'Unknown')}] {e}")
+                elif i == 0:  # Log the first attempt to show what we're checking
+                    info(f"Starting health checks on {base}/v1/models...")
             time.sleep(0.5)
         
         if ray_ok and http_ok:
@@ -477,15 +488,18 @@ def _ray_health_check(alias, port, repo_spec, pid, dtype):
         elif http_ok and not ray_ok:
             info("warning: HTTP server healthy but Ray cluster issues detected")
             print(f"partial: {repo_spec} as {alias}  mode=ray  dtype={dtype}  port={port}  pid={pid}")
+            print(f"Try: curl {base}/v1/models")
         else:
             info("warning: server did not become healthy in time; check Ray cluster and process logs")
             if not ray_ok:
                 info("- Ray cluster connectivity failed")
             if not http_ok:
                 info("- HTTP endpoint not responding")
+            info(f"- Check process logs for PID {pid}")
+            info(f"- Try manually: curl {base}/v1/models")
                 
     except ImportError:
-        info("warning: Ray not available for health check")
+        info("warning: httpx or Ray not available for health check")
         _standard_health_check(alias, port, repo_spec, pid, "ray", dtype)
     except Exception as e:
         info(f"warning: Ray health check failed: {e}")
@@ -980,7 +994,7 @@ def cmd_serve_ray(args):
     except ImportError:
         die("Ray not installed. Run: pip install ray")
         
-    ensure_vllm(); ensure_cache(); ensure_state()
+    ensure_vllm(); ensure_httpx(); ensure_cache(); ensure_state()
     
     reg = read_registry()
     
@@ -1038,15 +1052,24 @@ def cmd_serve_ray(args):
         env["HUGGING_FACE_HUB_TOKEN"] = token
 
     info(f"Starting vLLM (Ray backend) on port {port}, address={ray_address}")
+    info(f"Command: {' '.join(vllm_cmd)}")
     
-    # Start the process
+    # Start the process - don't capture output so we can see startup messages
     proc = subprocess.Popen(
         vllm_cmd,
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        # Allow output to be displayed directly to console during startup
+        stdout=None,
+        stderr=None,
         text=True
     )
+    
+    # Give process a moment to start and potentially fail fast
+    time.sleep(2)
+    
+    # Check if process is still running
+    if proc.poll() is not None:
+        die(f"vLLM process failed to start (exit code {proc.returncode}). Check the output above for errors.")
     
     _post_start_health(alias, port, repo_spec, proc.pid, "ray", dtype)
 

@@ -618,17 +618,26 @@ def cmd_ray_worker(args):
     if result.returncode != 0:
         die(f"Failed to start Ray worker: {result.stderr}")
     
-    # Find the Ray worker process
+    # Find the Ray worker process (python process running default_worker.py)
     time.sleep(2)
-    ray_processes = get_ray_processes()
+    import psutil
     worker_pid = None
-    for proc in ray_processes:
-        if f"ray start --address {args.address}" in proc['cmdline']:
-            worker_pid = proc['pid']
-            break
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time']):
+        try:
+            proc_name = proc.info['name'] or ''
+            cmdline = proc.info['cmdline'] or []
+            cmdline_str = ' '.join(cmdline)
+            # Look for python processes running ray worker
+            if ('python' in proc_name.lower() and 
+                'default_worker.py' in cmdline_str and
+                (time.time() - proc.info['create_time']) < 30):  # Recently started
+                worker_pid = str(proc.info['pid'])
+                break
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
     
     if not worker_pid:
-        die("Could not find Ray worker process after starting")
+        info("Warning: Could not find Ray worker process, but worker may still be running")
     
     # Update registry
     worker_id = f"worker_{int(time.time())}"

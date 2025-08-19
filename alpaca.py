@@ -669,7 +669,6 @@ def _ensure_local_ray_worker(ray_address):
         time.sleep(3)
         
         # Set RAY_ADDRESS environment variable for vLLM
-        import os
         os.environ["RAY_ADDRESS"] = head_gcs_address  # Use GCS address, not client address
         
         # Initialize Ray client to verify connection

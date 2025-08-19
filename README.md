@@ -66,7 +66,8 @@ pip install -e .
 
 ```bash
 pip install vllm huggingface_hub httpx psutil ray[default]
-# Then download alpaca.py and run directly
+# Then download alpaca.py and run directly via
+python alpaca.py
 ```
 
 ### Serve your first model

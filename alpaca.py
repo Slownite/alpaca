@@ -418,7 +418,81 @@ def _post_start_health(alias, port, repo_spec, pid, mode, dtype):
         "repo": repo_spec, "started_at": int(time.time())
     }
     write_registry(reg)
-    # health
+    
+    # Extended health check for Ray mode
+    if mode == "ray":
+        _ray_health_check(alias, port, repo_spec, pid, dtype)
+    else:
+        _standard_health_check(alias, port, repo_spec, pid, mode, dtype)
+
+def _ray_health_check(alias, port, repo_spec, pid, dtype):
+    """Enhanced health check for Ray distributed servers."""
+    try:
+        import httpx
+        import ray
+        base = f"http://127.0.0.1:{port}"
+        
+        # First check Ray cluster connectivity
+        ray_ok = False
+        http_ok = False
+        
+        info("Checking Ray cluster connectivity...")
+        try:
+            # Check if Ray is already initialized
+            if not ray.is_initialized():
+                ray_address = os.environ.get("RAY_ADDRESS")
+                if ray_address:
+                    ray.init(address=ray_address)
+            
+            # Verify Ray cluster has resources
+            cluster_resources = ray.cluster_resources()
+            available_resources = ray.available_resources()
+            
+            if cluster_resources.get('CPU', 0) > 0:
+                ray_ok = True
+                info(f"Ray cluster OK: {cluster_resources.get('CPU', 0)} total CPUs, {available_resources.get('CPU', 0)} available")
+            else:
+                info("warning: Ray cluster has no CPU resources available")
+                
+        except Exception as e:
+            info(f"warning: Ray cluster connectivity failed: {e}")
+        
+        # Extended timeout for Ray servers (3 minutes)
+        info("Checking HTTP endpoint health...")
+        for i in range(360):
+            try:
+                r = httpx.get(f"{base}/v1/models", timeout=3)
+                if r.status_code == 200:
+                    http_ok = True
+                    break
+            except Exception as e:
+                if i % 60 == 0:  # Log every 30 seconds
+                    info(f"HTTP health check attempt {i//60 + 1}/6: {e}")
+            time.sleep(0.5)
+        
+        if ray_ok and http_ok:
+            print(f"ready: {repo_spec} as {alias}  mode=ray  dtype={dtype}  port={port}  pid={pid}")
+            print(f"Ray cluster: {cluster_resources.get('CPU', 0)} CPUs available")
+            print(f"Try: curl {base}/v1/models")
+        elif http_ok and not ray_ok:
+            info("warning: HTTP server healthy but Ray cluster issues detected")
+            print(f"partial: {repo_spec} as {alias}  mode=ray  dtype={dtype}  port={port}  pid={pid}")
+        else:
+            info("warning: server did not become healthy in time; check Ray cluster and process logs")
+            if not ray_ok:
+                info("- Ray cluster connectivity failed")
+            if not http_ok:
+                info("- HTTP endpoint not responding")
+                
+    except ImportError:
+        info("warning: Ray not available for health check")
+        _standard_health_check(alias, port, repo_spec, pid, "ray", dtype)
+    except Exception as e:
+        info(f"warning: Ray health check failed: {e}")
+        _standard_health_check(alias, port, repo_spec, pid, "ray", dtype)
+
+def _standard_health_check(alias, port, repo_spec, pid, mode, dtype):
+    """Standard health check for non-Ray servers."""
     try:
         import httpx
         base = f"http://127.0.0.1:{port}"
@@ -435,6 +509,60 @@ def _post_start_health(alias, port, repo_spec, pid, mode, dtype):
         print(f"ready: {repo_spec} as {alias}  mode={mode}  dtype={dtype}  port={port}  pid={pid}")
         print(f"Try: curl {base}/v1/models")
     except Exception:
+        pass
+
+def _validate_ray_cluster(ray_address):
+    """Validate Ray cluster connectivity and resources before starting server."""
+    try:
+        import ray
+        
+        info("Validating Ray cluster connectivity...")
+        
+        # Try to connect to Ray cluster
+        try:
+            if ray.is_initialized():
+                ray.shutdown()
+            ray.init(address=ray_address, namespace="alpaca")
+        except Exception as e:
+            die(f"Failed to connect to Ray cluster at {ray_address}: {e}")
+        
+        # Check cluster resources
+        try:
+            cluster_resources = ray.cluster_resources()
+            available_resources = ray.available_resources()
+            
+            total_cpus = cluster_resources.get('CPU', 0)
+            available_cpus = available_resources.get('CPU', 0)
+            total_gpus = cluster_resources.get('GPU', 0)
+            available_gpus = available_resources.get('GPU', 0)
+            
+            if total_cpus == 0:
+                die("Ray cluster has no CPU resources. Check that workers are running.")
+            
+            if available_cpus < 1:
+                die(f"Ray cluster has insufficient CPU resources: {available_cpus} available, need at least 1")
+            
+            info(f"Ray cluster validated: {total_cpus} CPUs ({available_cpus} available)")
+            if total_gpus > 0:
+                info(f"GPU resources: {total_gpus} total ({available_gpus} available)")
+            
+            # Check for active nodes
+            nodes = ray.nodes()
+            alive_nodes = [n for n in nodes if n['Alive']]
+            if len(alive_nodes) == 0:
+                die("No alive nodes found in Ray cluster")
+            
+            info(f"Ray cluster ready: {len(alive_nodes)} active nodes")
+            
+        except Exception as e:
+            die(f"Failed to validate Ray cluster resources: {e}")
+            
+    except ImportError:
+        die("Ray not installed. Run: pip install ray")
+    except Exception as e:
+        die(f"Ray cluster validation failed: {e}")
+    finally:
+        # Leave Ray initialized for vLLM to use
         pass
 
 def cmd_logs(args):
@@ -877,6 +1005,9 @@ def cmd_serve_ray(args):
     
     if not ray_address.startswith("ray://"):
         die("Ray address must start with ray:// (example: ray://127.0.0.1:10001)")
+    
+    # Validate Ray cluster before proceeding
+    _validate_ray_cluster(ray_address)
     
     alias, repo_spec = _model_for_token(reg, args.model)
     dtype = args.dtype or "auto"

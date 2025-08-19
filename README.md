@@ -113,6 +113,7 @@ python alpaca.py run chatbot -p "Hello, how are you today?"
 | --------------- | ----------------------------------------- | -------------------------------------------------------------- |
 | `ray-head`      | Start Ray head node                      | `python alpaca.py ray-head --dashboard-port 8265`             |
 | `ray-worker`    | Add worker node to cluster               | `python alpaca.py ray-worker --address 127.0.0.1:6379 --gpus 1` |
+| `ray-connect`   | Connect to external cluster as worker   | `python alpaca.py ray-connect --address 127.0.0.1:6379`       |
 | `ray-status`    | Show cluster status and resources        | `python alpaca.py ray-status`                                 |
 | `ray-down`      | Stop Ray cluster and cleanup             | `python alpaca.py ray-down`                                   |
 | `cluster-up`    | Start local cluster with workers        | `python alpaca.py cluster-up --gpu-workers 2`                 |
@@ -123,6 +124,14 @@ python alpaca.py run chatbot -p "Hello, how are you today?"
 | Command        | Description                           | Example                                                           |
 | -------------- | ------------------------------------- | ----------------------------------------------------------------- |
 | `serve-ray`    | Serve with Ray backend               | `python alpaca.py serve-ray llama2` (auto-detects local cluster) |
+
+**serve-ray options**
+* `--address ray://HOST:PORT` specify Ray cluster address
+* `--namespace NAMESPACE` Ray namespace (default: vllm)
+* `--auto-fallback` automatically fall back to regular serve if Ray fails
+* `--port PORT`, `--dtype`, `--max-seqs` same as regular serve
+
+> **⚠️ Important:** `serve-ray` requires running inside a Ray worker process. Use `ray-connect` first when connecting to external clusters.
 
 **Ray cluster options**
 * `--dashboard-port PORT` dashboard port (default: 8265)
@@ -174,8 +183,24 @@ python alpaca.py ray-head --dashboard-port 8265
 # On worker nodes  
 python alpaca.py ray-worker --address HEAD_IP:6379 --gpus 1
 
+# On serving node (connect to cluster first)
+python alpaca.py ray-connect --address HEAD_IP:6379
+
 # Serve distributed model
 python alpaca.py serve-ray llama2-70b --address ray://HEAD_IP:10001
+```
+
+### External Ray cluster (KubeRay, etc.)
+
+```bash
+# Connect to external cluster as worker first
+python alpaca.py ray-connect --address HEAD_IP:6379
+
+# Then serve model on the cluster
+python alpaca.py serve-ray llama2-70b --address ray://HEAD_IP:10001
+
+# Or use auto-fallback for resilience
+python alpaca.py serve-ray llama2-70b --auto-fallback
 ```
 
 ### Custom API requests
@@ -314,6 +339,22 @@ python alpaca.py ray-head
 
 # Check Ray installation
 python -c "import ray; print('Ray OK')"
+```
+
+**serve-ray fails with "Engine core initialization failed"**
+
+This typically means you're not running inside a Ray worker process:
+
+```bash
+# Solution 1: Connect to cluster as worker first
+python alpaca.py ray-connect --address HEAD_IP:6379
+python alpaca.py serve-ray model-name
+
+# Solution 2: Use auto-fallback
+python alpaca.py serve-ray model-name --auto-fallback
+
+# Solution 3: Use regular serve instead
+python alpaca.py serve model-name
 ```
 
 ---

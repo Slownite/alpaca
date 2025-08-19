@@ -49,7 +49,7 @@ python -c "import torch; print(torch.cuda.is_available())"  # Should print True
 #### Option 1: pipx (recommended)
 
 ```bash
-pipx install git+https://github.com/Slownite/alpaca.git
+pipx install --include-deps git+https://github.com/Slownite/alpaca.git
 ```
 
 #### Option 2: from source

@@ -87,6 +87,17 @@ python alpaca.py run chatbot -p "Hello, how are you today?"
 
 ## 📋 Command Reference
 
+### 🎛️ Global Options
+
+| Flag         | Description                                   | Example                                     |
+| ------------ | --------------------------------------------- | ------------------------------------------- |
+| `--debug`    | Enable debug logging for all commands        | `python alpaca.py --debug serve model`     |
+| `--bind-all` | Bind to 0.0.0.0 for external network access  | `python alpaca.py --bind-all serve model`  |
+
+**Global options can be used with any command:**
+- `--debug` shows detailed command execution logs, subprocess output, and environment variables
+- `--bind-all` makes servers accessible from external networks instead of localhost only
+
 ### 🦙 Model Management
 
 | Command | Description               | Example                                            |
@@ -155,20 +166,25 @@ python alpaca.py run tiny -p "The future of AI is"
 
 ```bash
 python alpaca.py pull meta-llama/Llama-2-7b-chat-hf --alias llama2-chat
-python alpaca.py serve llama2-chat --dtype bf16 --max-seqs 64
+
+# Serve for external access (bind to all interfaces)
+python alpaca.py --bind-all serve llama2-chat --dtype bf16 --max-seqs 64
+
+# Debug server startup issues
+python alpaca.py --debug serve llama2-chat
 ```
 
 ### Distributed Ray cluster
 
 ```bash
-# Start local Ray cluster with 2 GPU workers
-python alpaca.py cluster-up --gpu-workers 2 --cpus-per-worker 4
+# Start local Ray cluster with 2 GPU workers (debug mode)
+python alpaca.py --debug cluster-up --gpu-workers 2 --cpus-per-worker 4
 
 # Check cluster status
 python alpaca.py ray-status
 
-# Serve distributed model (auto-detects cluster)
-python alpaca.py serve-ray llama2-70b
+# Serve distributed model with external access and debugging
+python alpaca.py --debug --bind-all serve-ray llama2-70b
 
 # Stop cluster when done
 python alpaca.py ray-down
@@ -177,8 +193,8 @@ python alpaca.py ray-down
 ### Multi-node deployment
 
 ```bash
-# On head node
-python alpaca.py ray-head --dashboard-port 8265
+# On head node (bind to all interfaces for external access)
+python alpaca.py --bind-all ray-head --dashboard-port 8265
 
 # On worker nodes  
 python alpaca.py ray-worker --address HEAD_IP:6379 --gpus 1
@@ -186,8 +202,8 @@ python alpaca.py ray-worker --address HEAD_IP:6379 --gpus 1
 # On serving node (connect to cluster first)
 python alpaca.py ray-connect --address HEAD_IP:6379
 
-# Serve distributed model
-python alpaca.py serve-ray llama2-70b --address ray://HEAD_IP:10001
+# Serve distributed model with external access and debug info
+python alpaca.py --debug --bind-all serve-ray llama2-70b --address ray://HEAD_IP:10001
 ```
 
 ### External Ray cluster (KubeRay, etc.)
@@ -355,6 +371,37 @@ python alpaca.py serve-ray model-name --auto-fallback
 
 # Solution 3: Use regular serve instead
 python alpaca.py serve model-name
+```
+
+**Debugging startup and connection issues**
+
+Use the `--debug` flag to see detailed logs:
+
+```bash
+# Debug model serving issues
+python alpaca.py --debug serve model-name
+
+# Debug Ray cluster startup
+python alpaca.py --debug ray-head
+
+# Debug Ray distributed serving
+python alpaca.py --debug serve-ray model-name
+
+# Debug external network access
+python alpaca.py --debug --bind-all serve model-name
+```
+
+**External network access issues**
+
+If your server isn't accessible from other machines:
+
+```bash
+# Make sure you're binding to all interfaces
+python alpaca.py --bind-all serve model-name
+
+# Check firewall settings (example for common ports)
+sudo ufw allow 8000
+sudo ufw allow 8265  # Ray dashboard
 ```
 
 ---

@@ -48,6 +48,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List
+import ipaddress  # NEW
 
 # ----------------------------
 # Configuration & paths
@@ -70,6 +71,9 @@ DEBUG_MODE = False
 
 # Global host binding address
 HOST_ADDRESS = "127.0.0.1"
+
+# Manual address override for specific environments (RunPod, etc.)
+MANUAL_ADVERTISE_IP = None
 
 # ----------------------------
 # Utilities
@@ -158,6 +162,10 @@ def get_local_ip() -> str:
 
 def get_advertise_address() -> str:
     """Get the IP address that should be advertised to other nodes."""
+    # Manual override takes precedence
+    if MANUAL_ADVERTISE_IP:
+        return MANUAL_ADVERTISE_IP
+    
     if HOST_ADDRESS == "0.0.0.0":
         # When binding to all interfaces, advertise the actual routable IP
         return get_local_ip()
@@ -1342,6 +1350,7 @@ def build_parser():
     p = argparse.ArgumentParser(prog="alpaca", description="Ollama-style wrapper for vLLM with Ray cluster management.")
     p.add_argument("--debug", action="store_true", help="Enable debug logging to show all command stdout/stderr")
     p.add_argument("--bind-all", action="store_true", help="Bind to 0.0.0.0 instead of 127.0.0.1 for external access")
+    p.add_argument("--advertise-ip", help="Manually specify the IP address to advertise to other nodes (overrides auto-detection)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("pull", help="Prefetch a HF repo into local cache.")
@@ -1442,7 +1451,7 @@ def build_parser():
 # Main
 # ----------------------------
 def main():
-    global DEBUG_MODE, HOST_ADDRESS
+    global DEBUG_MODE, HOST_ADDRESS, MANUAL_ADVERTISE_IP
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     parser = build_parser()
     args = parser.parse_args()
@@ -1456,6 +1465,11 @@ def main():
     if args.bind_all:
         HOST_ADDRESS = "0.0.0.0"
         info(f"Binding to all interfaces (0.0.0.0)")
+    
+    # Set manual advertise IP if provided
+    if args.advertise_ip:
+        MANUAL_ADVERTISE_IP = args.advertise_ip
+        info(f"Using manual advertise IP: {MANUAL_ADVERTISE_IP}")
     
     try:
         args.func(args)

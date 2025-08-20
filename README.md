@@ -89,14 +89,16 @@ python alpaca.py run chatbot -p "Hello, how are you today?"
 
 ### 🎛️ Global Options
 
-| Flag         | Description                                   | Example                                     |
-| ------------ | --------------------------------------------- | ------------------------------------------- |
-| `--debug`    | Enable debug logging for all commands        | `python alpaca.py --debug serve model`     |
-| `--bind-all` | Bind to 0.0.0.0 for external network access  | `python alpaca.py --bind-all serve model`  |
+| Flag            | Description                                   | Example                                          |
+| --------------- | --------------------------------------------- | ------------------------------------------------ |
+| `--debug`       | Enable debug logging for all commands        | `python alpaca.py --debug serve model`          |
+| `--bind-all`    | Bind to 0.0.0.0 for external network access  | `python alpaca.py --bind-all serve model`       |
+| `--advertise-ip` | Manually specify advertised IP address      | `python alpaca.py --advertise-ip pod.internal`  |
 
 **Global options can be used with any command:**
 - `--debug` shows detailed command execution logs, subprocess output, and environment variables
 - `--bind-all` makes servers accessible from external networks instead of localhost only
+- `--advertise-ip` overrides auto-detected IP for environments like RunPod, Docker, cloud instances
 
 ### 🦙 Model Management
 
@@ -204,6 +206,19 @@ python alpaca.py ray-connect --address HEAD_IP:6379
 
 # Serve distributed model with external access and debug info
 python alpaca.py --debug --bind-all serve-ray llama2-70b --address ray://HEAD_IP:10001
+```
+
+### Cloud/Container environments (RunPod, Docker, etc.)
+
+```bash
+# RunPod Global Networking: advertise the pod's internal DNS name
+python alpaca.py --bind-all --advertise-ip $RUNPOD_POD_ID.runpod.internal ray-head
+
+# Docker containers: advertise the container's external IP
+python alpaca.py --bind-all --advertise-ip 10.0.0.5 ray-head
+
+# Cloud instances: advertise the instance's public/private IP
+python alpaca.py --bind-all --advertise-ip 192.168.1.100 serve model-name
 ```
 
 ### External Ray cluster (KubeRay, etc.)
@@ -402,6 +417,27 @@ python alpaca.py --bind-all serve model-name
 # Check firewall settings (example for common ports)
 sudo ufw allow 8000
 sudo ufw allow 8265  # Ray dashboard
+```
+
+**Ray workers can't connect to head node**
+
+This often happens in Docker, RunPod, or cloud environments where auto-detected IP is wrong:
+
+```bash
+# Problem: Head advertises Docker bridge IP (172.x.x.x) but workers need external IP
+# Solution: Manually specify the advertise IP
+
+# RunPod Global Networking
+python alpaca.py --bind-all --advertise-ip $RUNPOD_POD_ID.runpod.internal ray-head
+
+# Docker with known external IP
+python alpaca.py --bind-all --advertise-ip YOUR_EXTERNAL_IP ray-head
+
+# Cloud instance with private IP
+python alpaca.py --bind-all --advertise-ip 10.0.0.100 ray-head
+
+# Debug what IP is being advertised
+python alpaca.py --debug --bind-all ray-head
 ```
 
 ---

@@ -144,11 +144,34 @@ def resolve_alias_or_repo(token: str, reg: Dict[str, Any]) -> Tuple[str, str]:
         return token, aliases[token]["repo"]
     return sanitize(token), token
 
+def get_local_ip() -> str:
+    """Get the local IP address that can be reached from other machines."""
+    try:
+        # Connect to a remote address to determine local IP
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            # Use Google's DNS server to determine our local IP
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except Exception:
+        # Fallback to localhost if we can't determine external IP
+        return "127.0.0.1"
+
+def get_advertise_address() -> str:
+    """Get the IP address that should be advertised to other nodes."""
+    if HOST_ADDRESS == "0.0.0.0":
+        # When binding to all interfaces, advertise the actual routable IP
+        return get_local_ip()
+    else:
+        # When binding to specific IP, use that IP
+        return HOST_ADDRESS
+
 def next_free_port(start: int = DEFAULT_PORT_START, max_attempts: int = 200) -> int:
+    # Always check port availability on localhost, regardless of bind address
+    check_address = "127.0.0.1" if HOST_ADDRESS == "0.0.0.0" else HOST_ADDRESS
     for port in range(start, start + max_attempts):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(0.1)
-            if s.connect_ex((HOST_ADDRESS, port)) != 0:
+            if s.connect_ex((check_address, port)) != 0:
                 return port
     die("No free port found in range.")
 
@@ -378,9 +401,11 @@ def _find_or_allocate_port(reg, alias: str, preferred: Optional[int]) -> int:
     if srv and srv.get("port"):
         return int(srv["port"])
     if preferred:
+        # Check port availability on localhost, regardless of bind address
+        check_address = "127.0.0.1" if HOST_ADDRESS == "0.0.0.0" else HOST_ADDRESS
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(0.2)
-            if s.connect_ex((HOST_ADDRESS, preferred)) != 0:
+            if s.connect_ex((check_address, preferred)) != 0:
                 return preferred
             info(f"Port {preferred} busy; allocating automatically.")
     return next_free_port()
@@ -469,7 +494,7 @@ def _ray_health_check(alias, port, repo_spec, pid, dtype):
     try:
         import httpx
         import ray
-        base = f"http://{HOST_ADDRESS}:{port}"
+        base = f"http://{get_advertise_address()}:{port}"
         
         # First check Ray cluster connectivity
         ray_ok = False
@@ -542,7 +567,7 @@ def _standard_health_check(alias, port, repo_spec, pid, mode, dtype):
     """Standard health check for non-Ray servers."""
     try:
         import httpx
-        base = f"http://{HOST_ADDRESS}:{port}"
+        base = f"http://{get_advertise_address()}:{port}"
         ok=False
         for _ in range(120):
             try:
@@ -822,6 +847,9 @@ def cmd_ray_head(args):
     client_port = args.client_port or next_free_port(RAY_CLIENT_PORT)
     gcs_port = args.gcs_port or next_free_port(RAY_GCS_PORT)
     
+    # Get the correct address to advertise
+    advertise_ip = get_advertise_address()
+    
     # Build Ray head command
     ray_cmd = [
         "ray", "start", "--head",
@@ -830,10 +858,19 @@ def cmd_ray_head(args):
         "--port", str(gcs_port)
     ]
     
+    # If we're binding to all interfaces, tell Ray to advertise the correct IP
+    if HOST_ADDRESS == "0.0.0.0":
+        ray_cmd.extend(["--node-ip-address", advertise_ip])
+    
     if args.no_dashboard:
         ray_cmd.extend(["--include-dashboard", "false"])
     
     info(f"Starting Ray head node on ports: dashboard={dashboard_port}, client={client_port}, gcs={gcs_port}")
+    if HOST_ADDRESS == "0.0.0.0":
+        info(f"Binding to all interfaces, advertising IP: {advertise_ip}")
+    
+    if DEBUG_MODE:
+        info(f"DEBUG: Ray head command: {' '.join(ray_cmd)}")
     
     # Start Ray head node
     result = run(ray_cmd, capture=True)
@@ -856,6 +893,9 @@ def cmd_ray_head(args):
     if not head_pid:
         info("Warning: Could not find raylet process, but Ray may still be running")
     
+    # Get the correct address to advertise
+    advertise_ip = get_advertise_address()
+    
     # Update registry
     reg.setdefault("ray_cluster", {})
     reg["ray_cluster"]["head_node"] = {
@@ -863,20 +903,25 @@ def cmd_ray_head(args):
         "dashboard_port": dashboard_port,
         "client_port": client_port,
         "gcs_port": gcs_port,
-        "address": f"{HOST_ADDRESS}:{gcs_port}",
-        "ray_address": f"ray://{HOST_ADDRESS}:{client_port}",
+        "bind_address": HOST_ADDRESS,  # What we bound to
+        "advertise_address": advertise_ip,  # What others should connect to
+        "address": f"{advertise_ip}:{gcs_port}",
+        "ray_address": f"ray://{advertise_ip}:{client_port}",
         "started_at": int(time.time())
     }
     reg["ray_cluster"]["workers"] = reg["ray_cluster"].get("workers", {})
     write_registry(reg)
     
     print(f"Ray head node started successfully!")
-    print(f"  Dashboard: http://{HOST_ADDRESS}:{dashboard_port}")
-    print(f"  Client address: ray://{HOST_ADDRESS}:{client_port}")
-    print(f"  GCS address: {HOST_ADDRESS}:{gcs_port}")
+    if HOST_ADDRESS == "0.0.0.0":
+        print(f"  Binding: {HOST_ADDRESS} (all interfaces)")
+        print(f"  Advertise IP: {advertise_ip}")
+    print(f"  Dashboard: http://{advertise_ip}:{dashboard_port}")
+    print(f"  Client address: ray://{advertise_ip}:{client_port}")
+    print(f"  GCS address: {advertise_ip}:{gcs_port}")
     print(f"  PID: {head_pid}")
-    print(f"\nTo add workers: alpaca ray-worker --address {HOST_ADDRESS}:{gcs_port}")
-    print(f"To serve models: alpaca serve-ray <model> --address ray://{HOST_ADDRESS}:{client_port}")
+    print(f"\nTo add workers: alpaca ray-worker --address {advertise_ip}:{gcs_port}")
+    print(f"To serve models: alpaca serve-ray <model> --address ray://{advertise_ip}:{client_port}")
 
 def cmd_ray_worker(args):
     """Add Ray worker node to existing cluster."""
@@ -967,7 +1012,13 @@ def cmd_ray_status(args):
         
         print("Ray Cluster Status:")
         print(f"  Head Node (PID {head_info['pid']}): {head_status}")
-        print(f"    Dashboard: http://{HOST_ADDRESS}:{head_info['dashboard_port']}")
+        # Use the advertise_address from registry if available, otherwise fall back to address parsing
+        advertise_ip = head_info.get('advertise_address')
+        if not advertise_ip and head_info.get('address'):
+            advertise_ip = head_info['address'].split(':')[0]
+        else:
+            advertise_ip = get_advertise_address()
+        print(f"    Dashboard: http://{advertise_ip}:{head_info['dashboard_port']}")
         print(f"    Client: {head_info['ray_address']}")
         print(f"    GCS: {head_info['address']}")
     else:

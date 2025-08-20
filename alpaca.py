@@ -1284,6 +1284,10 @@ def cmd_serve_ray(args):
     else:
         env["RAY_ADDRESS"] = ray_address
     
+    # Set VLLM_HOST_IP for proper Ray actor placement
+    vllm_host_ip = get_advertise_address()
+    env["VLLM_HOST_IP"] = vllm_host_ip
+    
     env["RAY_NAMESPACE"] = args.namespace
     env["VLLM_USE_MODELSCOPE"] = "false"
     if token := fetch_env_token():
@@ -1294,8 +1298,10 @@ def cmd_serve_ray(args):
     if DEBUG_MODE:
         info(f"DEBUG: vLLM Ray command: {' '.join(vllm_cmd)}")
         info(f"DEBUG: Environment variables: {dict((k, v) for k, v in env.items() if k.startswith(('RAY_', 'VLLM_', 'HUGGING_FACE_')))}")
+        info(f"DEBUG: VLLM_HOST_IP set to: {vllm_host_ip}")
     else:
         info(f"Command: {' '.join(vllm_cmd)}")
+        info(f"VLLM_HOST_IP: {vllm_host_ip}")
     
     # Start the process - don't capture output so we can see startup messages
     proc = subprocess.Popen(

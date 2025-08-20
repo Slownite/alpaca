@@ -146,6 +146,8 @@ python alpaca.py run chatbot -p "Hello, how are you today?"
 
 > **⚠️ Important:** `serve-ray` requires running inside a Ray worker process. Use `ray-connect` first when connecting to external clusters.
 
+> **💡 Tip:** Alpaca automatically sets `VLLM_HOST_IP` to the advertise address for proper Ray actor placement in containerized environments.
+
 **Ray cluster options**
 * `--dashboard-port PORT` dashboard port (default: 8265)
 * `--client-port PORT` Ray client port (default: 10001)  
@@ -438,6 +440,9 @@ python alpaca.py --bind-all --advertise-ip 10.0.0.100 ray-head
 
 # Debug what IP is being advertised
 python alpaca.py --debug --bind-all ray-head
+
+# For vLLM Ray serving, Alpaca automatically sets VLLM_HOST_IP
+python alpaca.py --bind-all --advertise-ip $RUNPOD_POD_ID.runpod.internal serve-ray model-name
 ```
 
 ---

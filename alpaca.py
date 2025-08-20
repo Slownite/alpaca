@@ -65,6 +65,12 @@ RAY_DASHBOARD_PORT = int(os.environ.get("ALPACA_RAY_DASHBOARD_PORT", "8265"))
 RAY_CLIENT_PORT = int(os.environ.get("ALPACA_RAY_CLIENT_PORT", "10001"))
 RAY_GCS_PORT = int(os.environ.get("ALPACA_RAY_GCS_PORT", "6379"))
 
+# Global debug flag
+DEBUG_MODE = False
+
+# Global host binding address
+HOST_ADDRESS = "127.0.0.1"
+
 # ----------------------------
 # Utilities
 # ----------------------------
@@ -76,12 +82,25 @@ def info(msg: str):
     print(msg, file=sys.stderr)
 
 def run(cmd: List[str], check=True, capture=False, env=None):
+    if DEBUG_MODE:
+        info(f"DEBUG: Executing command: {' '.join(cmd)}")
+    
     kwargs = {}
-    if capture:
+    if capture or DEBUG_MODE:
         kwargs["stdout"] = subprocess.PIPE
         kwargs["stderr"] = subprocess.PIPE
         kwargs["text"] = True
-    return subprocess.run(cmd, check=check, env=env, **kwargs)
+    
+    result = subprocess.run(cmd, check=check, env=env, **kwargs)
+    
+    if DEBUG_MODE:
+        if result.stdout:
+            info(f"DEBUG: STDOUT:\n{result.stdout}")
+        if result.stderr:
+            info(f"DEBUG: STDERR:\n{result.stderr}")
+        info(f"DEBUG: Return code: {result.returncode}")
+    
+    return result
 
 def have(cmd: str) -> bool:
     return shutil.which(cmd) is not None
@@ -129,7 +148,7 @@ def next_free_port(start: int = DEFAULT_PORT_START, max_attempts: int = 200) -> 
     for port in range(start, start + max_attempts):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(0.1)
-            if s.connect_ex(("127.0.0.1", port)) != 0:
+            if s.connect_ex((HOST_ADDRESS, port)) != 0:
                 return port
     die("No free port found in range.")
 
@@ -361,7 +380,7 @@ def _find_or_allocate_port(reg, alias: str, preferred: Optional[int]) -> int:
     if preferred:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(0.2)
-            if s.connect_ex(("127.0.0.1", preferred)) != 0:
+            if s.connect_ex((HOST_ADDRESS, preferred)) != 0:
                 return preferred
             info(f"Port {preferred} busy; allocating automatically.")
     return next_free_port()
@@ -406,14 +425,26 @@ def cmd_serve(args):
 
     info(f"Starting vLLM (GPU, dtype={dtype}) on port {port} for {repo_spec} …")
     
+    if DEBUG_MODE:
+        info(f"DEBUG: vLLM command: {' '.join(vllm_cmd)}")
+        info(f"DEBUG: Environment variables: {dict((k, v) for k, v in env.items() if k.startswith(('RAY_', 'VLLM_', 'HUGGING_FACE_')))}")
+    
     # Start the process
-    proc = subprocess.Popen(
-        vllm_cmd,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True
-    )
+    if DEBUG_MODE:
+        # In debug mode, don't capture output so we can see it in real-time
+        proc = subprocess.Popen(
+            vllm_cmd,
+            env=env,
+            text=True
+        )
+    else:
+        proc = subprocess.Popen(
+            vllm_cmd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
     
     _post_start_health(alias, port, repo_spec, proc.pid, mode, dtype)
 
@@ -438,7 +469,7 @@ def _ray_health_check(alias, port, repo_spec, pid, dtype):
     try:
         import httpx
         import ray
-        base = f"http://127.0.0.1:{port}"
+        base = f"http://{HOST_ADDRESS}:{port}"
         
         # First check Ray cluster connectivity
         ray_ok = False
@@ -511,7 +542,7 @@ def _standard_health_check(alias, port, repo_spec, pid, mode, dtype):
     """Standard health check for non-Ray servers."""
     try:
         import httpx
-        base = f"http://127.0.0.1:{port}"
+        base = f"http://{HOST_ADDRESS}:{port}"
         ok=False
         for _ in range(120):
             try:
@@ -832,20 +863,20 @@ def cmd_ray_head(args):
         "dashboard_port": dashboard_port,
         "client_port": client_port,
         "gcs_port": gcs_port,
-        "address": f"127.0.0.1:{gcs_port}",
-        "ray_address": f"ray://127.0.0.1:{client_port}",
+        "address": f"{HOST_ADDRESS}:{gcs_port}",
+        "ray_address": f"ray://{HOST_ADDRESS}:{client_port}",
         "started_at": int(time.time())
     }
     reg["ray_cluster"]["workers"] = reg["ray_cluster"].get("workers", {})
     write_registry(reg)
     
     print(f"Ray head node started successfully!")
-    print(f"  Dashboard: http://127.0.0.1:{dashboard_port}")
-    print(f"  Client address: ray://127.0.0.1:{client_port}")
-    print(f"  GCS address: 127.0.0.1:{gcs_port}")
+    print(f"  Dashboard: http://{HOST_ADDRESS}:{dashboard_port}")
+    print(f"  Client address: ray://{HOST_ADDRESS}:{client_port}")
+    print(f"  GCS address: {HOST_ADDRESS}:{gcs_port}")
     print(f"  PID: {head_pid}")
-    print(f"\nTo add workers: alpaca ray-worker --address 127.0.0.1:{gcs_port}")
-    print(f"To serve models: alpaca serve-ray <model> --address ray://127.0.0.1:{client_port}")
+    print(f"\nTo add workers: alpaca ray-worker --address {HOST_ADDRESS}:{gcs_port}")
+    print(f"To serve models: alpaca serve-ray <model> --address ray://{HOST_ADDRESS}:{client_port}")
 
 def cmd_ray_worker(args):
     """Add Ray worker node to existing cluster."""
@@ -936,7 +967,7 @@ def cmd_ray_status(args):
         
         print("Ray Cluster Status:")
         print(f"  Head Node (PID {head_info['pid']}): {head_status}")
-        print(f"    Dashboard: http://127.0.0.1:{head_info['dashboard_port']}")
+        print(f"    Dashboard: http://{HOST_ADDRESS}:{head_info['dashboard_port']}")
         print(f"    Client: {head_info['ray_address']}")
         print(f"    GCS: {head_info['address']}")
     else:
@@ -1200,7 +1231,12 @@ def cmd_serve_ray(args):
         env["HUGGING_FACE_HUB_TOKEN"] = token
 
     info(f"Starting vLLM (Ray backend) on port {port}, address={ray_address}")
-    info(f"Command: {' '.join(vllm_cmd)}")
+    
+    if DEBUG_MODE:
+        info(f"DEBUG: vLLM Ray command: {' '.join(vllm_cmd)}")
+        info(f"DEBUG: Environment variables: {dict((k, v) for k, v in env.items() if k.startswith(('RAY_', 'VLLM_', 'HUGGING_FACE_')))}")
+    else:
+        info(f"Command: {' '.join(vllm_cmd)}")
     
     # Start the process - don't capture output so we can see startup messages
     proc = subprocess.Popen(
@@ -1253,6 +1289,8 @@ def cmd_serve_ray(args):
 # ----------------------------
 def build_parser():
     p = argparse.ArgumentParser(prog="alpaca", description="Ollama-style wrapper for vLLM with Ray cluster management.")
+    p.add_argument("--debug", action="store_true", help="Enable debug logging to show all command stdout/stderr")
+    p.add_argument("--bind-all", action="store_true", help="Bind to 0.0.0.0 instead of 127.0.0.1 for external access")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("pull", help="Prefetch a HF repo into local cache.")
@@ -1309,7 +1347,7 @@ def build_parser():
     sp.set_defaults(func=cmd_ray_head)
 
     sp = sub.add_parser("ray-worker", help="Add Ray worker node to existing cluster.")
-    sp.add_argument("--address", required=True, help="Head node address, e.g. 127.0.0.1:6379")
+    sp.add_argument("--address", required=True, help="Head node address, e.g. 127.0.0.1:6379 or HEAD_IP:6379")
     sp.add_argument("--cpus", type=int, help="Number of CPUs for this worker.")
     sp.add_argument("--gpus", type=int, help="Number of GPUs for this worker.")
     sp.set_defaults(func=cmd_ray_worker)
@@ -1333,7 +1371,7 @@ def build_parser():
     sp.set_defaults(func=cmd_ray_down)
 
     sp = sub.add_parser("ray-connect", help="Connect to external Ray cluster as worker.")
-    sp.add_argument("--address", required=True, help="Head node GCS address, e.g. 127.0.0.1:6379")
+    sp.add_argument("--address", required=True, help="Head node GCS address, e.g. 127.0.0.1:6379 or HEAD_IP:6379")
     sp.set_defaults(func=cmd_ray_connect)
 
     # Ray shared inference (enhanced)
@@ -1353,9 +1391,21 @@ def build_parser():
 # Main
 # ----------------------------
 def main():
+    global DEBUG_MODE, HOST_ADDRESS
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     parser = build_parser()
     args = parser.parse_args()
+    
+    # Set debug mode based on command line flag
+    if args.debug:
+        DEBUG_MODE = True
+        info("DEBUG: Debug mode enabled")
+    
+    # Set host binding address based on command line flag
+    if args.bind_all:
+        HOST_ADDRESS = "0.0.0.0"
+        info(f"Binding to all interfaces (0.0.0.0)")
+    
     try:
         args.func(args)
     except KeyboardInterrupt:

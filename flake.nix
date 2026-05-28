@@ -92,6 +92,7 @@
           default = pkgs.mkShell {
             packages = [
               python
+              pkgs.python312Packages.ipython
               pkgs.uv
             ];
             env = {

@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alpaca-cli"
-version = "0.1.0"
+version = "0.2.0"
 description = "Ollama-style wrapper for vLLM with Ray distributed inference"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
-    {name = "Alpaca Team"}
+    {name = "Samuel Diop"}
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -27,6 +27,7 @@ dependencies = [
     "httpx",
     "argcomplete",
     "psutil",
+    "requests>=2.34.2",
 ]
 
 [project.optional-dependencies]

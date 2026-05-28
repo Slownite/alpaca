@@ -1,13 +1,11 @@
 [build-system]
-requires = ["setuptools", 
-"wheel", 
-"setuptools_scm[toml]>=7"]
+requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "alpaca-cli"
 version = "0.1.0"
-description = "Ollama-style wrapper for vLLM with Docker backend and Ray distributed inference"
+description = "Ollama-style wrapper for vLLM with Ray distributed inference"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
@@ -18,20 +16,31 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.10,<3.13"
 dependencies = [
-    "huggingface_hub", 
-    "httpx", 
-    "argcomplete", 
+    "huggingface_hub",
+    "httpx",
+    "argcomplete",
     "psutil",
-    "vllm",
-    "ray[default]"
+]
+
+[project.optional-dependencies]
+# Real GPU backend. Kept out of the default closure so the CLI and its
+# MockEngine-backed tests resolve and build without CUDA.
+gpu = [
+    "vllm>=0.6",
+    "ray[default]>=2.9",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
 ]
 
 [project.urls]
@@ -40,4 +49,15 @@ Repository = "https://github.com/Slownite/alpaca.git"
 Issues = "https://github.com/Slownite/alpaca/issues"
 
 [project.scripts]
-alpaca = "alpaca:main"
+alpaca = "alpaca.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["alpaca*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.uv]
+# Resolve torch/vllm from prebuilt wheels instead of building from sdist,
+# which would otherwise require CUDA_HOME at lock time.
+no-build-package = ["vllm", "torch"]

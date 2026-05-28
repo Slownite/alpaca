@@ -1,3 +1,6 @@
-alpaca_cli.egg-info/**
+*.egg-info/**
 venv/**
+.venv/**
 **/__pycache__/**
+result
+.direnv/

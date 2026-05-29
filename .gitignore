@@ -1,6 +1,39 @@
-*.egg-info/**
-venv/**
-.venv/**
-**/__pycache__/**
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.eggs/
+
+# Build artifacts
+build/
+dist/
+wheels/
+*.whl
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# uv
+.uv/
+
+# Test / coverage caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Nix
 result
+result-*
 .direnv/
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store

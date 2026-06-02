@@ -28,6 +28,7 @@ dependencies = [
     "argcomplete",
     "psutil",
     "requests>=2.34.2",
+    "ray[default]>=2.9",
 ]
 
 [project.optional-dependencies]
@@ -35,7 +36,6 @@ dependencies = [
 # MockEngine-backed tests resolve and build without CUDA.
 gpu = [
     "vllm>=0.6",
-    "ray[default]>=2.9",
 ]
 
 [dependency-groups]

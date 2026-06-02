@@ -122,12 +122,12 @@ dependencies = [
     { name = "httpx" },
     { name = "huggingface-hub" },
     { name = "psutil" },
+    { name = "ray", extra = ["default"] },
     { name = "requests" },
 ]
 
 [package.optional-dependencies]
 gpu = [
-    { name = "ray", extra = ["default"] },
     { name = "vllm" },
 ]
 
@@ -143,7 +143,7 @@ requires-dist = [
     { name = "httpx" },
     { name = "huggingface-hub" },
     { name = "psutil" },
-    { name = "ray", extras = ["default"], marker = "extra == 'gpu'", specifier = ">=2.9" },
+    { name = "ray", extras = ["default"], specifier = ">=2.9" },
     { name = "requests", specifier = ">=2.34.2" },
     { name = "vllm", marker = "extra == 'gpu'", specifier = ">=0.6" },
 ]

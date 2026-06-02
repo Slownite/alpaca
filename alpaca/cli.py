@@ -31,7 +31,11 @@ def _not_implemented(command: str) -> int:
 
 
 def cmd_pull(args: argparse.Namespace) -> int:
-    return _not_implemented("pull")
+    from alpaca import models
+
+    path = models.pull(args.model, revision=args.revision)
+    print(path)
+    return 0
 
 
 def cmd_serve(args: argparse.Namespace) -> int:

@@ -57,6 +57,11 @@ include = ["alpaca*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Skip GPU-only tests by default; opt in with `-m gpu` on a real GPU box.
+addopts = "-m 'not gpu'"
+markers = [
+    "gpu: tests that require a real GPU and the vllm extra (skipped in CI)",
+]
 
 [tool.uv]
 # Resolve torch/vllm from prebuilt wheels instead of building from sdist,
